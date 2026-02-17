@@ -1,0 +1,74 @@
+{
+  "version": "1.0",
+  "default_profile": "local-ssh",
+  "profiles": [
+    {
+      "name": "local-ssh",
+      "description": "本地SSH服务器",
+      "protocol": "ssh",
+      "host": "localhost",
+      "port": 22,
+      "username": "user",
+      "auth_method": "password"
+    },
+    {
+      "name": "windows-server",
+      "description": "Windows远程桌面",
+      "protocol": "rdp",
+      "host": "192.168.1.100",
+      "port": 3389,
+      "username": "Administrator",
+      "domain": "WORKGROUP",
+      "screen_size": "1920x1080",
+      "color_depth": 32
+    },
+    {
+      "name": "kvm-vnc",
+      "description": "KVM虚拟机VNC控制台",
+      "protocol": "vnc",
+      "host": "192.168.1.101",
+      "port": 5900,
+      "password": "vncpassword123",
+      "view_only": false
+    },
+    {
+      "name": "ubuntu-server",
+      "description": "Ubuntu生产服务器",
+      "protocol": "ssh",
+      "host": "203.0.113.10",
+      "port": 2222,
+      "username": "admin",
+      "auth_method": "key",
+      "key_path": "~/.ssh/id_rsa"
+    }
+  ],
+  "groups": [
+    {
+      "name": "production",
+      "profiles": ["ubuntu-server", "windows-server"]
+    },
+    {
+      "name": "local",
+      "profiles": ["local-ssh", "kvm-vnc"]
+    }
+  ],
+  "ui": {
+    "theme": "retro-green",
+    "colors": {
+      "background": "#000000",
+      "foreground": "#00ff00",
+      "selection": "#008800",
+      "border": "#00aa00",
+      "error": "#ff0000",
+      "success": "#00ff00",
+      "warning": "#ffff00"
+    },
+    "keybindings": {
+      "up": "up",
+      "down": "down",
+      "enter": "enter",
+      "quit": "q",
+      "refresh": "r"
+    }
+  }
+}
