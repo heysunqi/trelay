@@ -4,18 +4,23 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"syscall"
 
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"remote-desktop-manager/internal/config"
+	"remote-desktop-manager/internal/protocol/ssh"
 	"remote-desktop-manager/internal/ui/tui"
+	"remote-desktop-manager/pkg/models"
 )
 
 var (
 	// 命令行参数
-	configPath string
-	debugMode  bool
+	configPath  string
+	debugMode   bool
+	directSSH   string // 直接SSH连接的主机名
+	returnToRDM bool   // SSH连接结束后是否返回RDM界面
 
 	// 全局日志器
 	logger *zap.Logger
@@ -36,6 +41,8 @@ var rootCmd = &cobra.Command{
 func init() {
 	rootCmd.PersistentFlags().StringVarP(&configPath, "config", "c", "", "配置文件路径")
 	rootCmd.PersistentFlags().BoolVarP(&debugMode, "debug", "d", false, "启用调试模式")
+	rootCmd.PersistentFlags().StringVarP(&directSSH, "direct-ssh", "", "", "直接连接到指定名称的SSH主机（不启动TUI）")
+	rootCmd.PersistentFlags().BoolVarP(&returnToRDM, "return-to-rdm", "", false, "SSH连接结束后返回RDM界面")
 }
 
 // initLogger 初始化日志器
@@ -112,6 +119,72 @@ func runRoot(cmd *cobra.Command, args []string) {
 
 	// 重新创建配置管理器（使用实际的logger）
 	mgr = config.NewConfigManager(logger)
+
+	// 处理直接SSH连接
+	if directSSH != "" {
+		logger.Info("直接SSH连接模式", zap.String("host", directSSH))
+
+		// 查找主机配置
+		var targetHost *models.Host
+		for _, host := range cfg.Profiles {
+			if host.Name == directSSH {
+				targetHost = host
+				break
+			}
+		}
+
+		if targetHost == nil {
+			logger.Error("主机配置未找到", zap.String("host", directSSH))
+			fmt.Fprintf(os.Stderr, "主机配置未找到: %s\n", directSSH)
+			os.Exit(1)
+		}
+
+		if targetHost.Protocol != "ssh" {
+			logger.Error("主机协议不支持SSH", zap.String("host", directSSH), zap.String("protocol", targetHost.Protocol))
+			fmt.Fprintf(os.Stderr, "主机 %s 的协议不支持SSH: %s\n", directSSH, targetHost.Protocol)
+			os.Exit(1)
+		}
+
+		// 连接SSH
+		client := ssh.NewClient(targetHost)
+
+		if err := client.Connect(); err != nil {
+			logger.Error("SSH连接失败", zap.String("host", directSSH), zap.Error(err))
+			fmt.Fprintf(os.Stderr, "SSH连接失败: %v\n", err)
+			os.Exit(1)
+		}
+
+		fmt.Printf("已连接到 %s\n", directSSH)
+		logger.Debug("SSH连接成功", zap.String("host", directSSH))
+
+		// 启动交互式会话
+		if err := client.StartInteractiveSession(); err != nil {
+			logger.Error("SSH会话错误", zap.String("host", directSSH), zap.Error(err))
+		}
+
+		client.Disconnect()
+		fmt.Printf("\n已断开与 %s 的连接\n", directSSH)
+
+		// 如果需要返回RDM界面，重新启动程序
+		if returnToRDM {
+			fmt.Println("\n正在返回RDM界面...")
+			// 获取当前可执行文件路径
+			execPath, err := os.Executable()
+			if err == nil {
+				args := []string{execPath}
+				if configPath != "" {
+					args = append(args, "--config", configPath)
+				}
+				if debugMode {
+					args = append(args, "--debug")
+				}
+				// 使用 syscall.Exec 重新启动RDM程序
+				_ = syscall.Exec(execPath, args, os.Environ())
+			}
+		}
+
+		os.Exit(0)
+	}
 
 	// 显示欢迎信息
 	logger.Info("启动远程桌面管理器",

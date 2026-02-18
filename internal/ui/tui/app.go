@@ -7,6 +7,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 	"unicode"
 
@@ -16,7 +17,6 @@ import (
 	"golang.org/x/sys/unix"
 	"remote-desktop-manager/internal/config"
 	"remote-desktop-manager/internal/protocol"
-	sshclient "remote-desktop-manager/internal/protocol/ssh"
 	"remote-desktop-manager/pkg/models"
 )
 
@@ -44,31 +44,31 @@ func getTCSETS() uintptr {
 
 // App 表示TUI应用程序
 type App struct {
-	config         *models.Config
-	logger         *zap.Logger
-	configMgr      *config.ConfigManager
-	width          int
-	height         int
-	ready          bool
-	selected       int // 当前选中的主机索引
-	hosts          []*models.Host // 扁平化的主机列表
-	filteredHosts  []*models.Host // 过滤后的主机列表
-	grouped        map[string][]*models.Host // 分组的主机
-	groups         []string // 分组名称列表
-	currentGroup   string // 当前选中的分组
-	quitting       bool
+	config        *models.Config
+	logger        *zap.Logger
+	configMgr     *config.ConfigManager
+	width         int
+	height        int
+	ready         bool
+	selected      int                       // 当前选中的主机索引
+	hosts         []*models.Host            // 扁平化的主机列表
+	filteredHosts []*models.Host            // 过滤后的主机列表
+	grouped       map[string][]*models.Host // 分组的主机
+	groups        []string                  // 分组名称列表
+	currentGroup  string                    // 当前选中的分组
+	quitting      bool
 
 	// 搜索相关字段
-	searchQuery    string
-	searchMode     bool
-	searchCursor   int // 搜索框光标位置
+	searchQuery  string
+	searchMode   bool
+	searchCursor int // 搜索框光标位置
 
 	// 状态刷新相关字段
 	lastStatusCheck time.Time
 
 	// 连接相关字段
-	connManager    *protocol.Manager
-	connecting    bool // 是否正在连接，防止重复触发
+	connManager *protocol.Manager
+	connecting  bool // 是否正在连接，防止重复触发
 }
 
 // NewApp 创建新的应用程序实例
@@ -81,14 +81,14 @@ func NewApp(logger *zap.Logger) (*App, error) {
 	}
 
 	app := &App{
-		config:        cfg,
-		logger:        logger,
-		configMgr:     configMgr,
-		connManager:   protocol.NewManager(),
-		selected:      0,
-		searchQuery:   "",
-		searchMode:    false,
-		searchCursor:  0,
+		config:       cfg,
+		logger:       logger,
+		configMgr:    configMgr,
+		connManager:  protocol.NewManager(),
+		selected:     0,
+		searchQuery:  "",
+		searchMode:   false,
+		searchCursor: 0,
 	}
 
 	// 初始化主机数据
@@ -212,9 +212,6 @@ func (a *App) toggleSearchMode() {
 
 // executeConnection 执行连接
 func (a *App) executeConnection(host *models.Host) {
-	// 退出TUI
-	a.quitting = true
-
 	// 获取当前可执行文件路径
 	execPath, err := os.Executable()
 	if err != nil {
@@ -222,53 +219,16 @@ func (a *App) executeConnection(host *models.Host) {
 		return
 	}
 
-	// 使用goroutine在TUI退出后执行SSH连接
-	go func() {
-		// 等待一段时间让TUI完全退出
-		time.Sleep(100 * time.Millisecond)
+	// 使用 syscall.Exec 直接替换当前进程运行直接SSH连接
+	// 这样可以完全控制终端，避免与Bubble Tea事件循环的冲突
+	a.quitting = true
+	err = syscall.Exec(execPath, []string{execPath, "--direct-ssh", host.Name, "--return-to-rdm"}, os.Environ())
 
-		// 清理终端
-		fmt.Print("\033[2J\033[H") // 清屏和重置光标
-
-		// 恢复终端到正常模式（cooked mode）
-		// Bubble Tea 退出时应该已经恢复，但我们要确保终端在正常模式
-		if fd := int(os.Stdin.Fd()); fd > 0 {
-			// 读取当前终端设置
-			termios, err := unix.IoctlGetTermios(fd, tcGetTermios)
-			if err == nil {
-				// 设置为 cooked mode
-				termios.Lflag |= unix.ICANON | unix.ECHO | unix.ECHOE | unix.ECHOK | unix.ECHOCTL | unix.ECHOKE
-				termios.Lflag &^= unix.ISIG
-				unix.IoctlSetTermios(fd, tcSetTermios, termios)
-			}
-		}
-
-		// 创建SSH客户端
-		client := sshclient.NewClient(host)
-		a.logger.Info("正在连接SSH主机", zap.String("host", host.Name))
-
-		// 连接
-		if err := client.Connect(); err != nil {
-			fmt.Printf("连接失败: %v\n", err)
-			a.promptRestart(execPath)
-			return
-		}
-
-		fmt.Printf("已连接到 %s\n", host.Name)
-		a.logger.Info("SSH连接成功", zap.String("host", host.Name))
-
-		// 启动交互式会话
-		if err := client.StartInteractiveSession(); err != nil {
-			a.logger.Error("SSH会话错误", zap.Error(err))
-		}
-
-		// 断开连接
-		client.Disconnect()
-		fmt.Printf("\n已断开与 %s 的连接\n", host.Name)
-
-		// 提示重启程序
-		a.promptRestart(execPath)
-	}()
+	// 如果 syscall.Exec 返回，说明执行失败
+	if err != nil {
+		a.logger.Error("启动直接SSH连接失败", zap.Error(err))
+		fmt.Printf("启动直接SSH连接失败: %v\n", err)
+	}
 }
 
 // promptRestart 提示用户重启程序
@@ -627,7 +587,7 @@ func (a *App) getColumnWidths() ([]int, int) {
 			}
 		}
 	} else {
-			// 使用最小宽度，多余空间加到名称列
+		// 使用最小宽度，多余空间加到名称列
 		copy(widths, minWidths)
 		extraWidth := availableWidth - minTotalWidth
 		widths[2] += extraWidth // 名称列获得额外空间
@@ -894,10 +854,10 @@ func Run(logger *zap.Logger) error {
 	}
 
 	// 创建Bubble Tea程序
+	// 禁用鼠标跟踪，以防止干扰SSH会话中的终端功能（如鼠标选中）
 	p := tea.NewProgram(
 		app,
-		tea.WithAltScreen(),       // 使用备用屏幕
-		tea.WithMouseCellMotion(), // 启用鼠标单元格运动
+		tea.WithAltScreen(), // 使用备用屏幕
 	)
 
 	// 运行程序

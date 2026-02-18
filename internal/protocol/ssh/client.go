@@ -4,9 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime"
 	"syscall"
-	"unsafe"
 	"time"
+	"unsafe"
 
 	"golang.org/x/crypto/ssh"
 	"remote-desktop-manager/internal/protocol"
@@ -24,18 +25,35 @@ type winsize struct {
 // getTermSize 获取终端窗口大小
 func getTermSize() (uint16, uint16) {
 	ws := &winsize{}
-	retCode, _, _ := syscall.Syscall6(
-		syscall.SYS_IOCTL,
-		uintptr(syscall.Stdin),
-		uintptr(syscall.TIOCGWINSZ),
-		uintptr(unsafe.Pointer(ws)),
-		uintptr(0),
-		uintptr(0),
-		uintptr(0),
+
+	// 跨平台的 TIOCGWINSZ 常量
+	const (
+		TIOCGWINSZ_LINUX = 0x5413
+		TIOCGWINSZ_MAC   = 0x40087468 // TIOCGWINSZ on macOS
 	)
 
-	if int(retCode) == -1 {
+	var ioctlCmd uintptr
+	if runtime.GOOS == "darwin" {
+		ioctlCmd = TIOCGWINSZ_MAC
+	} else {
+		ioctlCmd = TIOCGWINSZ_LINUX
+	}
+
+	retCode, _, err := syscall.Syscall6(
+		syscall.SYS_IOCTL,
+		uintptr(syscall.Stdin),
+		ioctlCmd,
+		uintptr(unsafe.Pointer(ws)),
+		0, 0, 0,
+	)
+
+	if int(retCode) == -1 || err != 0 {
 		// 如果获取失败，使用默认值
+		return 24, 80
+	}
+
+	// 确保我们返回合理的大小
+	if ws.Rows == 0 || ws.Cols == 0 {
 		return 24, 80
 	}
 
@@ -170,12 +188,27 @@ func (c *Client) StartInteractiveSession() error {
 	}
 	defer session.Close()
 
-	// 请求伪终端
-	if err := session.RequestPty("xterm-256color", int(cols), int(rows), ssh.TerminalModes{
-		ssh.ECHO:          1,     // 开启回显
-		ssh.TTY_OP_ISPEED:  14400,  // 输入速度 = 14.4kbaud
-		ssh.TTY_OP_OSPEED:  14400,  // 输出速度 = 14.4kbaud
-	}); err != nil {
+	// 请求伪终端 - 完整的终端模式配置
+	// 这些模式设置与现代Linux和macOS终端高度兼容
+	modes := ssh.TerminalModes{
+		ssh.ECHO:          1,      // 开启回显
+		ssh.ECHOK:         1,      // 回显换行符
+		ssh.ECHOE:         1,      // 回显擦除字符
+		ssh.ECHOKE:        1,      // 回显删除字符序列
+		ssh.ECHOCTL:       1,      // 回显控制字符（显示^C而不是Control-C）
+		ssh.ICRNL:         1,      // 将CR转换为NL
+		ssh.IGNPAR:        1,      // 忽略奇偶校验错误的字节
+		ssh.IXON:          1,      // 启用XON/XOFF流量控制
+		ssh.IXOFF:         1,      // 启用XON/XOFF输入控制
+		ssh.OPOST:         1,      // 启用输出处理
+		ssh.ONLCR:         1,      // 将NL转换为CR-NL
+		ssh.ISIG:          1,      // 启用信号处理
+		ssh.ICANON:        1,      // 启用规范模式（行缓冲）
+		ssh.IEXTEN:        1,      // 启用输入扩展
+		ssh.TTY_OP_ISPEED: 115200, // 输入速度 = 115200 baud
+		ssh.TTY_OP_OSPEED: 115200, // 输出速度 = 115200 baud
+	}
+	if err := session.RequestPty("xterm-256color", int(rows), int(cols), modes); err != nil {
 		return fmt.Errorf("请求伪终端失败: %w", err)
 	}
 
@@ -224,4 +257,3 @@ func (c *Client) parsePrivateKey(keyData, keyPassword string) (ssh.Signer, error
 
 	return nil, fmt.Errorf("解析私钥失败，可能需要密码: %w", err)
 }
-

@@ -13,6 +13,8 @@
 - **状态监控**：3秒自动检测主机在线状态
 - **分组管理**：按组组织主机，支持分组切换
 - **配置管理**：JSON格式配置文件，支持热重载
+- **直接SSH连接**：支持通过命令行参数直接连接到指定SSH主机（不启动TUI）
+- **智能返回**：SSH连接结束后自动返回RDM界面
 
 ## 🏗️ 设计架构
 
@@ -33,8 +35,8 @@
 - **CLI框架**: [Cobra](https://github.com/spf13/cobra) - 命令行参数解析
 - **日志系统**: [Zap](https://go.uber.org/zap) - 高性能日志库
 - **SSH协议**: `golang.org/x/crypto/ssh` - Go标准SSH库
-- **RDP协议**: go-rdp (计划中)
-- **VNC协议**: go-vnc (计划中)
+- **RDP协议**: 计划中
+- **VNC协议**: 计划中
 
 ## 📁 代码目录结构
 
@@ -47,21 +49,17 @@ remote-desktop-manager/
 │   ├── config/                   # 配置管理
 │   │   ├── config.go            # 配置管理器
 │   │   └── loader.go            # 配置加载器
-│   ├── connection/               # 连接管理
 │   ├── protocol/                 # 协议实现
-│   │   ├── interface.go         # 协议接口定义
-│   │   ├── ssh/                 # SSH协议实现
-│   │   ├── rdp/                 # RDP协议实现
-│   │   └── vnc/                 # VNC协议实现
-│   ├── ui/                       # 用户界面
-│   │   └── tui/
-│   │       └── app.go           # TUI主逻辑
-│   └── platform/                 # 平台适配
+│   │   ├── manager.go           # 连接管理器
+│   │   ├── session.go           # 会话管理
+│   │   └── ssh/                 # SSH协议实现
+│   └── ui/                       # 用户界面
+│       └── tui/
+│           └── app.go           # TUI主逻辑
 ├── pkg/                          # 可对外暴露的包
 │   └── models/                   # 数据模型
 │       ├── host.go              # 主机模型
-│       ├── config.go            # 配置模型
-│       └── connection.go        # 连接模型
+│       └── config.go            # 配置模型
 ├── configs/                      # 配置文件示例
 │   └── config.json.example      # 配置示例文件
 ├── go.mod                       # Go模块定义
@@ -112,6 +110,12 @@ rdm --config /path/to/config.json
 # 启用调试模式
 rdm --debug
 
+# 直接连接到指定名称的SSH主机（不启动TUI）
+rdm --direct-ssh "主机名称"
+
+# 直接SSH连接后自动返回RDM界面（内部使用）
+rdm --direct-ssh "主机名称" --return-to-rdm
+
 # 查看帮助
 rdm --help
 ```
@@ -134,6 +138,16 @@ rdm --help
 │   Backspace : 删除字符                       │
 │   ←/→ : 移动光标                             │
 └─────────────────────────────────────────────┘
+```
+
+### 命令行参数详细说明
+```
+Flags:
+  -c, --config string       配置文件路径（默认：~/.config/remote-desktop-manager/config.json）
+  -d, --debug               启用调试模式（输出详细日志）
+      --direct-ssh string   直接连接到指定名称的SSH主机（不启动TUI）
+      --return-to-rdm       SSH连接结束后返回RDM界面（内部使用）
+  -h, --help                查看帮助信息
 ```
 
 ### 状态栏说明
@@ -265,9 +279,9 @@ rdm --help
 ## 🔧 开发指南
 
 ### 添加新协议
-1. 在 `internal/protocol/interface.go` 中定义协议接口
+1. 在 `internal/protocol/manager.go` 中定义协议接口
 2. 在 `internal/protocol/` 下创建新协议目录
-3. 实现 `Protocol` 接口
+3. 实现协议接口
 4. 在配置模型中添加协议特有字段
 5. 在TUI中更新协议图标和显示逻辑
 

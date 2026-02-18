@@ -17,13 +17,13 @@ const (
 
 // Connection 表示一个活跃的连接
 type Connection struct {
-	Host        *Host
-	Status      ConnectionStatus
-	StartTime   time.Time
-	EndTime     *time.Time
-	Error       error
-	SessionID   string // 会话标识符
-	Pid         int    // 子进程PID（如果适用）
+	Host      *Host
+	Status    ConnectionStatus
+	StartTime time.Time
+	EndTime   *time.Time
+	Error     error
+	SessionID string // 会话标识符
+	Pid       int    // 子进程PID（如果适用）
 }
 
 // NewConnection 创建新连接
