@@ -17,7 +17,6 @@ import (
 	"remote-desktop-manager/internal/config"
 	"remote-desktop-manager/internal/protocol"
 	sshclient "remote-desktop-manager/internal/protocol/ssh"
-	"remote-desktop-manager/internal/ui/dialogs"
 	"remote-desktop-manager/pkg/models"
 )
 
@@ -69,8 +68,6 @@ type App struct {
 
 	// 连接相关字段
 	connManager    *protocol.Manager
-	showDialog     bool // 是否显示对话框
-	connectDialog  *dialogs.ConnectDialog
 	connecting    bool // 是否正在连接，防止重复触发
 }
 
@@ -92,7 +89,6 @@ func NewApp(logger *zap.Logger) (*App, error) {
 		searchQuery:   "",
 		searchMode:    false,
 		searchCursor:  0,
-		showDialog:    false,
 	}
 
 	// 初始化主机数据
@@ -258,7 +254,7 @@ func (a *App) executeConnection(host *models.Host) {
 			return
 		}
 
-		fmt.Printf("已连接到 %s\n\n", host.Name)
+		fmt.Printf("已连接到 %s\n", host.Name)
 		a.logger.Info("SSH连接成功", zap.String("host", host.Name))
 
 		// 启动交互式会话
@@ -360,42 +356,6 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.statusCheckCmd()
 
 	case tea.KeyMsg:
-		// 如果对话框显示，转发消息给对话框
-		if a.showDialog && a.connectDialog != nil {
-			// 更新对话框
-			newDialog, cmd := a.connectDialog.Update(msg)
-			a.connectDialog = newDialog
-
-			// 检查对话框是否应该关闭
-			if a.connectDialog.IsClosed() {
-				// 保存确认状态
-				confirmed := a.connectDialog.IsConfirmed()
-
-				// 关闭对话框
-				a.showDialog = false
-				host := a.connectDialog.Host()
-				a.connectDialog = nil
-
-				// 清除连接标志（如果取消连接）
-				if !confirmed {
-					a.connecting = false
-				}
-
-				// 如果确认，执行连接
-				if confirmed {
-					a.executeConnection(host)
-				}
-				return a, cmd
-			}
-
-			// 如果对话框返回非nil命令，执行它（可能是Quit）
-			if cmd != nil {
-				return a, cmd
-			}
-
-			return a, cmd
-		}
-
 		// 处理键盘输入
 		switch msg.String() {
 		case "q", "ctrl+c":
@@ -430,12 +390,11 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 
 		case "enter":
-			// 显示连接确认对话框（只响应Enter键，不响应空格）
+			// 直接连接到选中的主机
 			if len(a.filteredHosts) > 0 && a.selected < len(a.filteredHosts) && !a.connecting {
 				host := a.filteredHosts[a.selected]
-				a.connectDialog = dialogs.NewConnectDialog(host)
-				a.showDialog = true
 				a.connecting = true // 设置连接标志，防止重复触发
+				a.executeConnection(host)
 			}
 			return a, nil
 
@@ -539,42 +498,6 @@ func (a *App) View() string {
 	// 帮助信息
 	help := a.renderHelp()
 	content += "\n" + help
-
-	// 如果显示对话框，在内容上方叠加显示
-	if a.showDialog && a.connectDialog != nil {
-		// 计算对话框位置（居中）
-		dialogContent := a.connectDialog.View()
-
-		// 将对话框叠加在屏幕中央
-		lines := strings.Split(content, "\n")
-		dialogLines := strings.Split(dialogContent, "\n")
-
-		// 计算垂直居中位置
-		verticalPadding := (a.height - len(dialogLines)) / 2
-		horizontalPadding := (a.width - 40) / 2 // 假设对话框宽度约40
-
-		// 构建带对话框的内容
-		var result strings.Builder
-		for i, line := range lines {
-			if i == verticalPadding {
-				result.WriteString("\n")
-				// 添加空白行
-				for j := 0; j < horizontalPadding; j++ {
-					result.WriteString(" ")
-				}
-				// 添加对话框内容
-				for _, dialogLine := range dialogLines {
-					result.WriteString(dialogLine + "\n")
-					for j := 0; j < horizontalPadding; j++ {
-						result.WriteString(" ")
-					}
-				}
-			}
-			result.WriteString(line + "\n")
-		}
-
-		return result.String()
-	}
 
 	return content
 }
@@ -681,7 +604,7 @@ func (a *App) getColumnWidths() ([]int, int) {
 	// 最小总宽度：2+4+30+15+10+20+8 = 89字符
 	// 加上列之间的空格：每列之间1个空格，6个分隔符 = 6字符，总共93字符
 
-	minWidths := []int{2, 4, 30, 15, 10, 20, 8}
+	minWidths := []int{2, 4, 30, 15, 10, 20, 10}
 	colSpacing := 1 // 列之间的空格数
 
 	// 如果终端宽度足够，按比例分配额外空间
@@ -940,14 +863,9 @@ func stripANSI(s string) string {
 // renderStatusBar 渲染状态栏
 func (a *App) renderStatusBar() string {
 	// 连接状态
-	var status string
-	if a.showDialog {
-		status = "按 [Esc] 取消，[Enter] 确认"
-	} else {
-		totalHosts := len(a.filteredHosts)
-		selectedIndex := a.selected + 1
-		status = fmt.Sprintf("%d/%d hosts | [↑/↓] 选择 | [Enter] 连接", selectedIndex, totalHosts)
-	}
+	totalHosts := len(a.filteredHosts)
+	selectedIndex := a.selected + 1
+	status := fmt.Sprintf("%d/%d hosts | [↑/↓] 选择 | [Enter] 连接", selectedIndex, totalHosts)
 
 	statusStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#00aa00")).

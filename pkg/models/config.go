@@ -7,6 +7,7 @@ type Config struct {
 	Profiles        []*Host         `json:"profiles"`
 	Groups          []*Group        `json:"groups,omitempty"`
 	UI              *UIConfig       `json:"ui,omitempty"`
+	LogLevel        string          `json:"log_level,omitempty"` // 日志级别: debug, info, warn, error
 }
 
 // Group 表示主机分组
@@ -39,6 +40,7 @@ func DefaultConfig() *Config {
 		Version: "1.0",
 		Profiles: []*Host{},
 		Groups: []*Group{},
+		LogLevel: "error", // 默认只输出error级别日志
 		UI: &UIConfig{
 			Theme: "retro-green",
 			Colors: &UIColorScheme{

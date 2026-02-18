@@ -1,6 +1,7 @@
 {
   "version": "1.0",
   "profiles": [],
+  "log_level": "error",
   "ui": {
     "theme": "retro-green",
     "colors": {
