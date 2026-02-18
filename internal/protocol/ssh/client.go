@@ -1,0 +1,227 @@
+package ssh
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"syscall"
+	"unsafe"
+	"time"
+
+	"golang.org/x/crypto/ssh"
+	"remote-desktop-manager/internal/protocol"
+	"remote-desktop-manager/pkg/models"
+)
+
+// winsize 终端窗口大小
+type winsize struct {
+	Rows    uint16
+	Cols    uint16
+	Xpixels uint16
+	Ypixels uint16
+}
+
+// getTermSize 获取终端窗口大小
+func getTermSize() (uint16, uint16) {
+	ws := &winsize{}
+	retCode, _, _ := syscall.Syscall6(
+		syscall.SYS_IOCTL,
+		uintptr(syscall.Stdin),
+		uintptr(syscall.TIOCGWINSZ),
+		uintptr(unsafe.Pointer(ws)),
+		uintptr(0),
+		uintptr(0),
+		uintptr(0),
+	)
+
+	if int(retCode) == -1 {
+		// 如果获取失败，使用默认值
+		return 24, 80
+	}
+
+	return ws.Rows, ws.Cols
+}
+
+// Client SSH客户端
+type Client struct {
+	host      *models.Host
+	client    *ssh.Client
+	status    protocol.ConnectionStatus
+	err       error
+	startTime *time.Time
+}
+
+// NewClient 创建SSH客户端
+func NewClient(host *models.Host) *Client {
+	return &Client{
+		host:   host,
+		status: protocol.StatusIdle,
+	}
+}
+
+// Connect 建立SSH连接
+func (c *Client) Connect() error {
+	c.status = protocol.StatusConnecting
+	c.startTime = &time.Time{}
+	*c.startTime = time.Now()
+
+	// 构建SSH配置
+	config := &ssh.ClientConfig{
+		User:            c.host.Username,
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // 生产环境应该验证主机密钥
+		Timeout:         30 * time.Second,
+	}
+
+	// 配置认证方式
+	if c.host.Password != "" {
+		// 密码认证
+		config.Auth = []ssh.AuthMethod{
+			ssh.Password(c.host.Password),
+		}
+	} else if c.host.KeyPath != "" {
+		// 密钥认证
+		key, err := c.parsePrivateKey(c.host.KeyPath, c.host.Passphrase)
+		if err != nil {
+			c.status = protocol.StatusError
+			c.err = fmt.Errorf("解析私钥失败: %w", err)
+			return c.err
+		}
+		config.Auth = []ssh.AuthMethod{ssh.PublicKeys(key)}
+	} else {
+		c.status = protocol.StatusError
+		c.err = errors.New("未配置密码或私钥")
+		return c.err
+	}
+
+	// 连接服务器
+	address := fmt.Sprintf("%s:%d", c.host.Host, c.host.Port)
+	client, err := ssh.Dial("tcp", address, config)
+	if err != nil {
+		c.status = protocol.StatusError
+		c.err = fmt.Errorf("SSH连接失败: %w", err)
+		return c.err
+	}
+
+	c.client = client
+	c.status = protocol.StatusConnected
+	c.err = nil
+
+	return nil
+}
+
+// Disconnect 断开连接
+func (c *Client) Disconnect() error {
+	if c.client == nil {
+		return nil
+	}
+
+	err := c.client.Close()
+	c.client = nil
+	c.status = protocol.StatusDisconnected
+	return err
+}
+
+// IsConnected 返回是否已连接
+func (c *Client) IsConnected() bool {
+	return c.client != nil
+}
+
+// GetStatus 返回连接状态
+func (c *Client) GetStatus() protocol.ConnectionStatus {
+	return c.status
+}
+
+// GetError 返回连接错误
+func (c *Client) GetError() error {
+	return c.err
+}
+
+// GetHostID 返回主机标识
+func (c *Client) GetHostID() string {
+	return c.host.Name
+}
+
+// GetStartTime 返回连接开始时间
+func (c *Client) GetStartTime() *time.Time {
+	return c.startTime
+}
+
+// GetDuration 返回连接持续时间
+func (c *Client) GetDuration() time.Duration {
+	if c.startTime == nil {
+		return 0
+	}
+	return time.Since(*c.startTime)
+}
+
+// StartInteractiveSession 启动交互式SSH会话
+func (c *Client) StartInteractiveSession() error {
+	if c.client == nil {
+		return errors.New("未连接到SSH服务器")
+	}
+
+	// 获取终端窗口大小
+	rows, cols := getTermSize()
+
+	// 创建会话
+	session, err := c.client.NewSession()
+	if err != nil {
+		return fmt.Errorf("创建SSH会话失败: %w", err)
+	}
+	defer session.Close()
+
+	// 请求伪终端
+	if err := session.RequestPty("xterm-256color", int(cols), int(rows), ssh.TerminalModes{
+		ssh.ECHO:          1,     // 开启回显
+		ssh.TTY_OP_ISPEED:  14400,  // 输入速度 = 14.4kbaud
+		ssh.TTY_OP_OSPEED:  14400,  // 输出速度 = 14.4kbaud
+	}); err != nil {
+		return fmt.Errorf("请求伪终端失败: %w", err)
+	}
+
+	// 连接标准输入输出到SSH会话（必须在Shell之前设置）
+	session.Stdin = os.Stdin
+	session.Stdout = os.Stdout
+	session.Stderr = os.Stderr
+
+	// 启动shell
+	if err := session.Shell(); err != nil {
+		return fmt.Errorf("启动shell失败: %w", err)
+	}
+
+	// 等待会话结束
+	return session.Wait()
+}
+
+// parsePrivateKey 解析私钥
+func (c *Client) parsePrivateKey(keyData, keyPassword string) (ssh.Signer, error) {
+	// 如果keyData是文件路径，读取文件内容
+	var keyBytes []byte
+	if _, err := os.Stat(keyData); err == nil {
+		// 是文件路径
+		keyBytes, err = os.ReadFile(keyData)
+		if err != nil {
+			return nil, fmt.Errorf("读取私钥文件失败: %w", err)
+		}
+	} else {
+		// 是私钥内容
+		keyBytes = []byte(keyData)
+	}
+
+	// 尝试无密码解析
+	key, err := ssh.ParsePrivateKey(keyBytes)
+	if err == nil {
+		return key, nil
+	}
+
+	// 如果失败，尝试使用密码解析
+	if keyPassword != "" {
+		key, err = ssh.ParsePrivateKeyWithPassphrase(keyBytes, []byte(keyPassword))
+		if err == nil {
+			return key, nil
+		}
+	}
+
+	return nil, fmt.Errorf("解析私钥失败，可能需要密码: %w", err)
+}
+

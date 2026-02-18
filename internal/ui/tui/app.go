@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os"
+	"os/exec"
 	"strings"
 	"time"
 	"unicode"
@@ -11,7 +13,11 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"go.uber.org/zap"
+	"golang.org/x/sys/unix"
 	"remote-desktop-manager/internal/config"
+	"remote-desktop-manager/internal/protocol"
+	sshclient "remote-desktop-manager/internal/protocol/ssh"
+	"remote-desktop-manager/internal/ui/dialogs"
 	"remote-desktop-manager/pkg/models"
 )
 
@@ -38,6 +44,12 @@ type App struct {
 
 	// 状态刷新相关字段
 	lastStatusCheck time.Time
+
+	// 连接相关字段
+	connManager    *protocol.Manager
+	showDialog     bool // 是否显示对话框
+	connectDialog  *dialogs.ConnectDialog
+	connecting    bool // 是否正在连接，防止重复触发
 }
 
 // NewApp 创建新的应用程序实例
@@ -53,10 +65,12 @@ func NewApp(logger *zap.Logger) (*App, error) {
 		config:        cfg,
 		logger:        logger,
 		configMgr:     configMgr,
+		connManager:   protocol.NewManager(),
 		selected:      0,
 		searchQuery:   "",
 		searchMode:    false,
 		searchCursor:  0,
+		showDialog:    false,
 	}
 
 	// 初始化主机数据
@@ -178,6 +192,118 @@ func (a *App) toggleSearchMode() {
 	}
 }
 
+// executeConnection 执行连接
+func (a *App) executeConnection(host *models.Host) {
+	// 退出TUI
+	a.quitting = true
+
+	// 获取当前可执行文件路径
+	execPath, err := os.Executable()
+	if err != nil {
+		a.logger.Error("获取可执行文件路径失败", zap.Error(err))
+		return
+	}
+
+	// 使用goroutine在TUI退出后执行SSH连接
+	go func() {
+		// 等待一段时间让TUI完全退出
+		time.Sleep(100 * time.Millisecond)
+
+		// 清理终端
+		fmt.Print("\033[2J\033[H") // 清屏和重置光标
+
+		// 恢复终端到正常模式（cooked mode）
+		// Bubble Tea 退出时应该已经恢复，但我们要确保终端在正常模式
+		if fd := int(os.Stdin.Fd()); fd > 0 {
+			// 读取当前终端设置
+			termios, err := unix.IoctlGetTermios(fd, unix.TCGETS)
+			if err == nil {
+				// 设置为 cooked mode
+				termios.Lflag |= unix.ICANON | unix.ECHO | unix.ECHOE | unix.ECHOK | unix.ECHOCTL | unix.ECHOKE
+				termios.Lflag &^= unix.ISIG
+				unix.IoctlSetTermios(fd, unix.TCSETS, termios)
+			}
+		}
+
+		// 创建SSH客户端
+		client := sshclient.NewClient(host)
+		a.logger.Info("正在连接SSH主机", zap.String("host", host.Name))
+
+		// 连接
+		if err := client.Connect(); err != nil {
+			fmt.Printf("连接失败: %v\n", err)
+			a.promptRestart(execPath)
+			return
+		}
+
+		fmt.Printf("已连接到 %s\n\n", host.Name)
+		a.logger.Info("SSH连接成功", zap.String("host", host.Name))
+
+		// 启动交互式会话
+		if err := client.StartInteractiveSession(); err != nil {
+			a.logger.Error("SSH会话错误", zap.Error(err))
+		}
+
+		// 断开连接
+		client.Disconnect()
+		fmt.Printf("\n已断开与 %s 的连接\n", host.Name)
+
+		// 提示重启程序
+		a.promptRestart(execPath)
+	}()
+}
+
+// promptRestart 提示用户重启程序
+func (a *App) promptRestart(execPath string) {
+	// 确保终端在正常模式
+	if fd := int(os.Stdin.Fd()); fd > 0 {
+		termios, err := unix.IoctlGetTermios(fd, unix.TCGETS)
+		if err == nil {
+			// 设置为 cooked mode
+			termios.Lflag |= unix.ICANON | unix.ECHO | unix.ISIG
+			unix.IoctlSetTermios(fd, unix.TCSETS, termios)
+		}
+	}
+
+	// 清空输入缓冲区
+	buf := make([]byte, 1024)
+	os.Stdin.Read(buf)
+
+	fmt.Println("\n按 Enter 键返回TUI，或按 Ctrl+C 退出...")
+
+	// 等待Enter键或Ctrl+C
+	readBuf := make([]byte, 1)
+	for {
+		n, err := os.Stdin.Read(readBuf)
+		if err != nil {
+			// 读取错误（可能是Ctrl+C）
+			os.Exit(0)
+		}
+		if n > 0 {
+			// 只响应Enter键
+			if readBuf[0] == '\n' || readBuf[0] == '\r' {
+				break
+			}
+		}
+	}
+
+	// 重新启动程序
+	fmt.Print("\033[2J\033[H") // 清屏
+	cmd := exec.Command(execPath)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Start(); err != nil {
+		fmt.Printf("重启失败: %v\n", err)
+		os.Exit(1)
+	}
+
+	// 等待新进程
+	cmd.Wait()
+	os.Exit(0)
+}
+
 // Init 初始化应用程序，返回初始命令
 func (a *App) Init() tea.Cmd {
 	// 初始状态检查
@@ -206,6 +332,42 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.statusCheckCmd()
 
 	case tea.KeyMsg:
+		// 如果对话框显示，转发消息给对话框
+		if a.showDialog && a.connectDialog != nil {
+			// 更新对话框
+			newDialog, cmd := a.connectDialog.Update(msg)
+			a.connectDialog = newDialog
+
+			// 检查对话框是否应该关闭
+			if a.connectDialog.IsClosed() {
+				// 保存确认状态
+				confirmed := a.connectDialog.IsConfirmed()
+
+				// 关闭对话框
+				a.showDialog = false
+				host := a.connectDialog.Host()
+				a.connectDialog = nil
+
+				// 清除连接标志（如果取消连接）
+				if !confirmed {
+					a.connecting = false
+				}
+
+				// 如果确认，执行连接
+				if confirmed {
+					a.executeConnection(host)
+				}
+				return a, cmd
+			}
+
+			// 如果对话框返回非nil命令，执行它（可能是Quit）
+			if cmd != nil {
+				return a, cmd
+			}
+
+			return a, cmd
+		}
+
 		// 处理键盘输入
 		switch msg.String() {
 		case "q", "ctrl+c":
@@ -239,12 +401,13 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return a, nil
 
-		case "enter", " ":
-			// 连接选中的主机
-			if len(a.filteredHosts) > 0 && a.selected < len(a.filteredHosts) {
+		case "enter":
+			// 显示连接确认对话框（只响应Enter键，不响应空格）
+			if len(a.filteredHosts) > 0 && a.selected < len(a.filteredHosts) && !a.connecting {
 				host := a.filteredHosts[a.selected]
-				a.logger.Info("连接主机", zap.String("host", host.Name))
-				// TODO: 实现连接逻辑
+				a.connectDialog = dialogs.NewConnectDialog(host)
+				a.showDialog = true
+				a.connecting = true // 设置连接标志，防止重复触发
 			}
 			return a, nil
 
@@ -403,26 +566,6 @@ func (a *App) renderSearchBox() string {
 	return searchStyle.Render(searchLabel + displayText)
 }
 
-// stripANSI 移除字符串中的ANSI转义序列
-func stripANSI(s string) string {
-	var result strings.Builder
-	inEscape := false
-	for _, r := range s {
-		if r == '\x1b' {
-			inEscape = true
-			continue
-		}
-		if inEscape {
-			if r == 'm' {
-				inEscape = false
-			}
-			continue
-		}
-		result.WriteRune(r)
-	}
-	return result.String()
-}
-
 // displayWidth 计算字符串在终端中的显示宽度（中文字符2，英文字符1）
 func displayWidth(s string) int {
 	// 先移除ANSI序列
@@ -459,10 +602,7 @@ func truncateByDisplayWidth(s string, maxWidth int) string {
 		}
 
 		if currentWidth+runeWidth > maxWidth {
-			// 添加省略号（如果还有空间）
-			if currentWidth+1 <= maxWidth {
-				result += "…"
-			}
+			result += "…"
 			break
 		}
 		result += string(r)
@@ -475,7 +615,7 @@ func truncateByDisplayWidth(s string, maxWidth int) string {
 func (a *App) getColumnWidths() ([]int, int) {
 	// 列定义：选中(2)、协议(4)、名称(30)、IP(15)、用户名(10)、分组(20)、状态(8)
 	// 最小总宽度：2+4+30+15+10+20+8 = 89字符
-	// 加上列之间的空格：每列之间1个空格，6个分隔符 = 6字符，总共95字符
+	// 加上列之间的空格：每列之间1个空格，6个分隔符 = 6字符，总共93字符
 
 	minWidths := []int{2, 4, 30, 15, 10, 20, 8}
 	colSpacing := 1 // 列之间的空格数
@@ -500,7 +640,7 @@ func (a *App) getColumnWidths() ([]int, int) {
 			}
 		}
 	} else {
-		// 使用最小宽度，多余空间加到名称列
+			// 使用最小宽度，多余空间加到名称列
 		copy(widths, minWidths)
 		extraWidth := availableWidth - minTotalWidth
 		widths[2] += extraWidth // 名称列获得额外空间
@@ -516,24 +656,31 @@ func (a *App) renderTableHeader() string {
 	// 表头文本
 	headers := []string{" ", "协议", "名称", "IP地址", "用户名", "分组", "状态"}
 
+	// 构建表头行
+	var headerBuilder strings.Builder
+	for i, header := range headers {
+		width := widths[i]
+		headerDisplayWidth := displayWidth(header)
+		// 左对齐显示表头
+		headerBuilder.WriteString(header)
+		padding := width - headerDisplayWidth
+		if padding > 0 {
+			headerBuilder.WriteString(strings.Repeat(" ", padding))
+		}
+
+		// 添加列分隔符（最后一列后不加）
+		if i < len(headers)-1 {
+			headerBuilder.WriteString(strings.Repeat(" ", colSpacing))
+		}
+	}
+
 	// 表头样式
 	headerStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#00ff00")).
 		Bold(true).
 		Background(lipgloss.Color("#003300"))
 
-	// 渲染每一列
-	renderedColumns := make([]string, len(headers))
-	for i, header := range headers {
-		width := widths[i]
-		displayText := truncateByDisplayWidth(header, width)
-		colStyle := headerStyle.Copy().Width(width).Align(lipgloss.Left)
-		renderedColumns[i] = colStyle.Render(displayText)
-	}
-
-	// 组合各列
-	separator := strings.Repeat(" ", colSpacing)
-	return strings.Join(renderedColumns, separator)
+	return headerStyle.Render(headerBuilder.String())
 }
 
 // renderHostList 渲染主机列表
@@ -628,7 +775,8 @@ func (a *App) renderHostItem(host *models.Host, selected bool) string {
 		groupName = "未分组"
 	}
 
-	// 列内容
+	// 构建表格行
+	var rowBuilder strings.Builder
 	columns := []string{
 		selectionIndicator,
 		protocolText,
@@ -639,19 +787,6 @@ func (a *App) renderHostItem(host *models.Host, selected bool) string {
 		statusText,
 	}
 
-	// 基础样式
-	baseStyle := lipgloss.NewStyle()
-	if selected {
-		baseStyle = baseStyle.
-			Foreground(lipgloss.Color("#000000")).
-			Background(lipgloss.Color("#00ff00")).
-			Bold(true)
-	} else {
-		baseStyle = baseStyle.Foreground(lipgloss.Color("#00ff00"))
-	}
-
-	// 渲染每一列
-	renderedColumns := make([]string, len(columns))
 	for i, column := range columns {
 		width := widths[i]
 		displayText := column
@@ -666,90 +801,125 @@ func (a *App) renderHostItem(host *models.Host, selected bool) string {
 		// 应用列宽限制
 		displayText = truncateByDisplayWidth(displayText, width)
 
-		// 创建列样式
-		colStyle := baseStyle.Copy().Width(width).Align(lipgloss.Left)
-
-		// 状态列特殊着色
-		if i == 6 { // 状态列
-			colStyle = colStyle.Foreground(lipgloss.Color(statusColor)).Bold(true)
+		// 添加文本和填充
+		rowBuilder.WriteString(displayText)
+		padding := width - displayWidth(displayText)
+		if padding > 0 {
+			rowBuilder.WriteString(strings.Repeat(" ", padding))
 		}
 
-		renderedColumns[i] = colStyle.Render(displayText)
+		// 添加列分隔符（最后一列后不加）
+		if i < len(columns)-1 {
+			rowBuilder.WriteString(strings.Repeat(" ", colSpacing))
+		}
 	}
 
-	// 组合各列
-	separator := strings.Repeat(" ", colSpacing)
-	return strings.Join(renderedColumns, separator)
+	// 应用样式
+	var style lipgloss.Style
+	if selected {
+		style = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#000000")).
+			Background(lipgloss.Color("#00ff00")).
+			Bold(true)
+	} else {
+		style = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#00ff00"))
+	}
+
+	// 状态文字单独着色
+	rowText := rowBuilder.String()
+	// 找到状态列的位置并着色
+	// 计算状态列的开始位置（最后一列）
+	statusColIndex := len(columns) - 1 // 状态是最后一列
+	statusStartPos := 0
+	for i := 0; i < statusColIndex; i++ {
+		statusStartPos += widths[i]
+		if i < statusColIndex-1 {
+			statusStartPos += colSpacing
+		}
+	}
+	// 状态列的宽度是widths[statusColIndex]
+	statusEndPos := statusStartPos + widths[statusColIndex]
+
+	if statusStartPos < len(rowText) && statusEndPos <= len(rowText) {
+		beforeStatus := rowText[:statusStartPos]
+		statusCol := rowText[statusStartPos:statusEndPos]
+		afterStatus := rowText[statusEndPos:]
+
+		statusStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color(statusColor)).Bold(true)
+		coloredStatus := statusStyle.Render(statusCol)
+
+		rowText = beforeStatus + coloredStatus + afterStatus
+	}
+
+	return style.Render(rowText)
+}
+
+// stripANSI 移除字符串中的ANSI转义序列
+func stripANSI(s string) string {
+	var result strings.Builder
+	inEscape := false
+	for _, r := range s {
+		if r == '\x1b' {
+			inEscape = true
+		} else if r == 'm' {
+			inEscape = false
+		}
+		if !inEscape {
+			result.WriteRune(r)
+		}
+	}
+	return result.String()
 }
 
 // renderStatusBar 渲染状态栏
 func (a *App) renderStatusBar() string {
-	style := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#888888")).
-		Width(a.width).
-		Align(lipgloss.Left)
-
-	// 统计在线主机
-	onlineCount := 0
-	for _, host := range a.hosts {
-		if host.Status == "online" {
-			onlineCount++
-		}
-	}
-
-	status := fmt.Sprintf("主机: %d/%d | 在线: %d/%d | 分组: %d | 选中: ",
-		a.selected+1, len(a.filteredHosts), onlineCount, len(a.hosts), len(a.groups))
-
-	if len(a.filteredHosts) > 0 && a.selected < len(a.filteredHosts) {
-		host := a.filteredHosts[a.selected]
-		status += host.Name
+	// 连接状态
+	var status string
+	if a.showDialog {
+		status = "按 [Esc] 取消，[Enter] 确认"
 	} else {
-		status += "无"
+		totalHosts := len(a.filteredHosts)
+		selectedIndex := a.selected + 1
+		status = fmt.Sprintf("%d/%d hosts | [↑/↓] 选择 | [Enter] 连接", selectedIndex, totalHosts)
 	}
 
-	// 添加搜索状态
-	if a.searchQuery != "" {
-		status += fmt.Sprintf(" | 搜索: '%s'", a.searchQuery)
-	}
+	statusStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#00aa00")).
+		Width(a.width - 4).
+		Align(lipgloss.Right)
 
-	// 添加最后状态检查时间
-	lastCheckStr := a.lastStatusCheck.Format("15:04:05")
-	status += fmt.Sprintf(" | 状态更新: %s", lastCheckStr)
-
-	return style.Render(status)
+	return statusStyle.Render(status)
 }
 
 // renderHelp 渲染帮助信息
 func (a *App) renderHelp() string {
-	style := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#555555")).
-		Width(a.width).
-		Align(lipgloss.Center)
+	helpStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#888888")).
+		Italic(true)
+	helpText := "键盘: ↑↓ 选择 | Enter 连接 | Tab 分组 | / 搜索 | R 刷新 | Q 退出"
 
-	var help string
-	if a.searchMode {
-		help = "输入搜索词 | Esc: 退出搜索 | Enter: 确认搜索"
-	} else {
-		help = "↑/↓: 选择 | Enter: 连接 | Tab: 切换分组 | R: 刷新 | /: 搜索 | Q: 退出"
-	}
-
-	return style.Render(help)
+	return helpStyle.Render(helpText)
 }
 
-// Run 启动TUI应用程序
+// Run 运行TUI应用程序
 func Run(logger *zap.Logger) error {
+	// 创建应用程序实例
 	app, err := NewApp(logger)
 	if err != nil {
 		return err
 	}
 
-	p := tea.NewProgram(app,
-		tea.WithAltScreen(), // 使用备用屏幕
-		tea.WithMouseCellMotion(), // 启用鼠标支持
+	// 创建Bubble Tea程序
+	p := tea.NewProgram(
+		app,
+		tea.WithAltScreen(),       // 使用备用屏幕
+		tea.WithMouseCellMotion(), // 启用鼠标单元格运动
 	)
 
+	// 运行程序
 	if _, err := p.Run(); err != nil {
-		logger.Error("TUI运行失败", zap.Error(err))
 		return err
 	}
 

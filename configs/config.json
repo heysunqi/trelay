@@ -1,0 +1,23 @@
+{
+  "version": "1.0",
+  "profiles": [],
+  "ui": {
+    "theme": "retro-green",
+    "colors": {
+      "background": "#000000",
+      "foreground": "#00ff00",
+      "selection": "#008800",
+      "border": "#00aa00",
+      "error": "#ff0000",
+      "success": "#00ff00",
+      "warning": "#ffff00"
+    },
+    "keybindings": {
+      "down": "down",
+      "enter": "enter",
+      "quit": "q",
+      "refresh": "r",
+      "up": "up"
+    }
+  }
+}
