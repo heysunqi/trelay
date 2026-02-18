@@ -33,14 +33,14 @@ func getTCGETS() uintptr {
 	if runtime.GOOS == "darwin" {
 		return 0x404C7413 // TIOCGETA on macOS
 	}
-	return unix.TCGETS
+	return 0x5401
 }
 
 func getTCSETS() uintptr {
 	if runtime.GOOS == "darwin" {
 		return 0x804C7414 // TIOCSETA on macOS
 	}
-	return unix.TCSETS
+	return 0x5402
 }
 
 // App 表示TUI应用程序
@@ -238,12 +238,12 @@ func (a *App) executeConnection(host *models.Host) {
 		// Bubble Tea 退出时应该已经恢复，但我们要确保终端在正常模式
 		if fd := int(os.Stdin.Fd()); fd > 0 {
 			// 读取当前终端设置
-			termios, err := unix.IoctlGetTermios(fd, unix.TCGETS)
+			termios, err := unix.IoctlGetTermios(fd, tcGetTermios)
 			if err == nil {
 				// 设置为 cooked mode
 				termios.Lflag |= unix.ICANON | unix.ECHO | unix.ECHOE | unix.ECHOK | unix.ECHOCTL | unix.ECHOKE
 				termios.Lflag &^= unix.ISIG
-				unix.IoctlSetTermios(fd, unix.TCSETS, termios)
+				unix.IoctlSetTermios(fd, tcSetTermios, termios)
 			}
 		}
 
@@ -539,6 +539,42 @@ func (a *App) View() string {
 	// 帮助信息
 	help := a.renderHelp()
 	content += "\n" + help
+
+	// 如果显示对话框，在内容上方叠加显示
+	if a.showDialog && a.connectDialog != nil {
+		// 计算对话框位置（居中）
+		dialogContent := a.connectDialog.View()
+
+		// 将对话框叠加在屏幕中央
+		lines := strings.Split(content, "\n")
+		dialogLines := strings.Split(dialogContent, "\n")
+
+		// 计算垂直居中位置
+		verticalPadding := (a.height - len(dialogLines)) / 2
+		horizontalPadding := (a.width - 40) / 2 // 假设对话框宽度约40
+
+		// 构建带对话框的内容
+		var result strings.Builder
+		for i, line := range lines {
+			if i == verticalPadding {
+				result.WriteString("\n")
+				// 添加空白行
+				for j := 0; j < horizontalPadding; j++ {
+					result.WriteString(" ")
+				}
+				// 添加对话框内容
+				for _, dialogLine := range dialogLines {
+					result.WriteString(dialogLine + "\n")
+					for j := 0; j < horizontalPadding; j++ {
+						result.WriteString(" ")
+					}
+				}
+			}
+			result.WriteString(line + "\n")
+		}
+
+		return result.String()
+	}
 
 	return content
 }
