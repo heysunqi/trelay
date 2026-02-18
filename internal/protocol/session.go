@@ -8,11 +8,11 @@ import (
 type ConnectionStatus string
 
 const (
-	StatusIdle        ConnectionStatus = "idle"
-	StatusConnecting  ConnectionStatus = "connecting"
-	StatusConnected   ConnectionStatus = "connected"
+	StatusIdle         ConnectionStatus = "idle"
+	StatusConnecting   ConnectionStatus = "connecting"
+	StatusConnected    ConnectionStatus = "connected"
 	StatusDisconnected ConnectionStatus = "disconnected"
-	StatusError       ConnectionStatus = "error"
+	StatusError        ConnectionStatus = "error"
 )
 
 // Session 表示一个远程会话

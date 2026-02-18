@@ -2,11 +2,12 @@ package models
 
 // Config 表示应用程序的完整配置
 type Config struct {
-	Version         string          `json:"version"`
-	DefaultProfile  string          `json:"default_profile,omitempty"`
-	Profiles        []*Host         `json:"profiles"`
-	Groups          []*Group        `json:"groups,omitempty"`
-	UI              *UIConfig       `json:"ui,omitempty"`
+	Version        string    `json:"version"`
+	DefaultProfile string    `json:"default_profile,omitempty"`
+	Profiles       []*Host   `json:"profiles"`
+	Groups         []*Group  `json:"groups,omitempty"`
+	UI             *UIConfig `json:"ui,omitempty"`
+	LogLevel       string    `json:"log_level,omitempty"` // 日志级别: debug, info, warn, error
 }
 
 // Group 表示主机分组
@@ -17,9 +18,9 @@ type Group struct {
 
 // UIConfig 表示用户界面配置
 type UIConfig struct {
-	Theme      string              `json:"theme,omitempty"`
-	Colors     *UIColorScheme      `json:"colors,omitempty"`
-	Keybindings map[string]string  `json:"keybindings,omitempty"`
+	Theme       string            `json:"theme,omitempty"`
+	Colors      *UIColorScheme    `json:"colors,omitempty"`
+	Keybindings map[string]string `json:"keybindings,omitempty"`
 }
 
 // UIColorScheme 表示颜色方案
@@ -36,9 +37,10 @@ type UIColorScheme struct {
 // DefaultConfig 返回默认配置
 func DefaultConfig() *Config {
 	return &Config{
-		Version: "1.0",
+		Version:  "1.0",
 		Profiles: []*Host{},
-		Groups: []*Group{},
+		Groups:   []*Group{},
+		LogLevel: "error", // 默认只输出error级别日志
 		UI: &UIConfig{
 			Theme: "retro-green",
 			Colors: &UIColorScheme{
@@ -51,10 +53,10 @@ func DefaultConfig() *Config {
 				Warning:    "#ffff00",
 			},
 			Keybindings: map[string]string{
-				"up":    "up",
-				"down":  "down",
-				"enter": "enter",
-				"quit":  "q",
+				"up":      "up",
+				"down":    "down",
+				"enter":   "enter",
+				"quit":    "q",
 				"refresh": "r",
 			},
 		},

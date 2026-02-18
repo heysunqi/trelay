@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/viper"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 	"remote-desktop-manager/pkg/models"
 )
 
@@ -67,10 +68,13 @@ func (cm *ConfigManager) Load() (*models.Config, error) {
 		return nil, err
 	}
 
-	cm.logger.Info("配置文件加载成功",
-		zap.String("path", configPath),
-		zap.Int("profiles", len(config.Profiles)),
-		zap.Int("groups", len(config.Groups)))
+	// 只在调试模式下打印配置加载信息，避免影响生产环境的日志输出
+	if cm.logger.Core().Enabled(zapcore.DebugLevel) {
+		cm.logger.Debug("配置文件加载成功",
+			zap.String("path", configPath),
+			zap.Int("profiles", len(config.Profiles)),
+			zap.Int("groups", len(config.Groups)))
+	}
 
 	return &config, nil
 }

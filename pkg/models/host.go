@@ -12,22 +12,22 @@ type Host struct {
 	Port int    `json:"port,omitempty"`
 
 	// 认证信息
-	Username    string `json:"username,omitempty"`
-	AuthMethod  string `json:"auth_method,omitempty"` // password, key, agent
-	Password    string `json:"password,omitempty"`
-	KeyPath     string `json:"key_path,omitempty"`
-	Passphrase  string `json:"passphrase,omitempty"` // SSH密钥密码
+	Username   string `json:"username,omitempty"`
+	AuthMethod string `json:"auth_method,omitempty"` // password, key, agent
+	Password   string `json:"password,omitempty"`
+	KeyPath    string `json:"key_path,omitempty"`
+	Passphrase string `json:"passphrase,omitempty"` // SSH密钥密码
 
 	// RDP特定字段
-	Domain      string `json:"domain,omitempty"`
-	ScreenSize  string `json:"screen_size,omitempty"`  // 例如 "1920x1080"
-	ColorDepth  int    `json:"color_depth,omitempty"`  // 例如 16, 24, 32
+	Domain     string `json:"domain,omitempty"`
+	ScreenSize string `json:"screen_size,omitempty"` // 例如 "1920x1080"
+	ColorDepth int    `json:"color_depth,omitempty"` // 例如 16, 24, 32
 
 	// VNC特定字段
-	ViewOnly    bool   `json:"view_only,omitempty"`
+	ViewOnly bool `json:"view_only,omitempty"`
 
 	// 连接选项
-	Options     map[string]interface{} `json:"options,omitempty"`
+	Options map[string]interface{} `json:"options,omitempty"`
 
 	// 内部状态（不序列化到JSON）
 	Status      string `json:"-"` // online, offline, connecting, connected

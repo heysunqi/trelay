@@ -18,10 +18,10 @@ type ConnectionHistory struct {
 // Manager 连接管理器
 type Manager struct {
 	mu            sync.RWMutex
-	sessions      map[string]Session            // hostID -> Session
-	activeSession string                       // 当前活跃的会话
-	history       []ConnectionHistory          // 连接历史
-	maxHistory    int                          // 最大历史记录数
+	sessions      map[string]Session  // hostID -> Session
+	activeSession string              // 当前活跃的会话
+	history       []ConnectionHistory // 连接历史
+	maxHistory    int                 // 最大历史记录数
 }
 
 // NewManager 创建连接管理器

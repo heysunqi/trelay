@@ -13,12 +13,14 @@
 - **状态监控**：3秒自动检测主机在线状态
 - **分组管理**：按组组织主机，支持分组切换
 - **配置管理**：JSON格式配置文件，支持热重载
+- **直接SSH连接**：支持通过命令行参数直接连接到指定SSH主机（不启动TUI）
+- **智能返回**：SSH连接结束后自动返回RDM界面
 
 ## 🏗️ 设计架构
 
 ### 整体架构
 ```
-┌─────────────────────────────────────────┐
+┌─────────────────────────────────┐
 │            CLI/TUI 界面层                │
 ├─────────────────────────────────────────┤
 │             业务逻辑层                   │
@@ -29,12 +31,12 @@
 
 ### 技术栈
 - **TUI框架**: [Bubble Tea](https://github.com/charmbracelet/bubbletea) - Go的TUI框架
-- **配置管理**: [Viper](https://github.com/spf13/viper) - 多格式配置支持
+- **配置管理**: 标准JSON配置，支持多级别日志
 - **CLI框架**: [Cobra](https://github.com/spf13/cobra) - 命令行参数解析
-- **日志系统**: [Zap](https://go.uber.org/zap) - 高性能日志库
+- **日志系统**: [Zap](https://go.uber.org/zap) - 高性能日志库，支持多级别输出
 - **SSH协议**: `golang.org/x/crypto/ssh` - Go标准SSH库
-- **RDP协议**: go-rdp (计划中)
-- **VNC协议**: go-vnc (计划中)
+- **RDP协议**: 计划中
+- **VNC协议**: 计划中
 
 ## 📁 代码目录结构
 
@@ -47,21 +49,17 @@ remote-desktop-manager/
 │   ├── config/                   # 配置管理
 │   │   ├── config.go            # 配置管理器
 │   │   └── loader.go            # 配置加载器
-│   ├── connection/               # 连接管理
 │   ├── protocol/                 # 协议实现
-│   │   ├── interface.go         # 协议接口定义
-│   │   ├── ssh/                 # SSH协议实现
-│   │   ├── rdp/                 # RDP协议实现
-│   │   └── vnc/                 # VNC协议实现
-│   ├── ui/                       # 用户界面
-│   │   └── tui/
-│   │       └── app.go           # TUI主逻辑
-│   └── platform/                 # 平台适配
+│   │   ├── manager.go           # 连接管理器
+│   │   ├── session.go           # 会话管理
+│   │   └── ssh/                 # SSH协议实现
+│   └── ui/                       # 用户界面
+│       └── tui/
+│           └── app.go           # TUI主逻辑
 ├── pkg/                          # 可对外暴露的包
 │   └── models/                   # 数据模型
 │       ├── host.go              # 主机模型
-│       ├── config.go            # 配置模型
-│       └── connection.go        # 连接模型
+│       └── config.go            # 配置模型
 ├── configs/                      # 配置文件示例
 │   └── config.json.example      # 配置示例文件
 ├── go.mod                       # Go模块定义
@@ -109,8 +107,14 @@ rdm
 # 指定配置文件
 rdm --config /path/to/config.json
 
-# 启用调试模式
+# 启用调试模式（输出所有日志）
 rdm --debug
+
+# 直接连接到指定名称的SSH主机（不启动TUI）
+rdm --direct-ssh "主机名称"
+
+# 直接SSH连接后自动返回RDM界面（内部使用）
+rdm --direct-ssh "主机名称" --return-to-rdm
 
 # 查看帮助
 rdm --help
@@ -136,11 +140,21 @@ rdm --help
 └─────────────────────────────────────────────┘
 ```
 
+### 命令行参数详细说明
+```
+Flags:
+  -c, --config string       配置文件路径（默认：~/.config/remote-desktop-manager/config.json）
+  -d, --debug               启用调试模式（输出详细日志）
+      --direct-ssh string   直接连接到指定名称的SSH主机（不启动TUI）
+      --return-to-rdm       SSH连接结束后返回RDM界面（内部使用）
+  -h, --help                查看帮助信息
+```
+
 ### 状态栏说明
 ```
 主机: 1/2 | 在线: 2/2 | 分组: 2 | 选中: debian-server | 搜索: 'server' | 状态更新: 15:04:05
-└───────┘ └────────┘ └──────┘ └──────────────────┘ └───────────────┘ └─────────────┘
-  当前/过滤  在线/总数  分组数     当前选中主机        搜索关键词       最后状态检查
+└───────┘ └────────┘ └──────────────────┘ └───────────────┘ └─────────────┘ └─────────────┘ └───────────────┘ └─────────────┘ └───────────────┘ └─────────────┘ └───────────────┘
+ 当前/过滤  在线/总数  分组数     当前选中主机        搜索关键词       最后状态检查
 ```
 
 ## ⚙️ 配置文件
@@ -148,10 +162,29 @@ rdm --help
 ### 配置文件位置
 默认配置文件路径：`~/.config/remote-desktop-manager/config.json`
 
+### 日志级别配置
+程序支持多级别日志输出，通过 `log_level` 字段控制：
+
+| 级别 | 说明 | 输出内容 |
+|------|------|----------|
+| `debug` | 所有日志 | 调试详细信息，包含所有级别 |
+| `info` | 信息及以上 | 常规运行信息，含info、warn、error |
+| `warn` | 警告及以上 | 警告和错误信息 |
+| `error` | 仅错误 | 默认级别，只输出错误日志 |
+
+**使用示例：**
+```json
+{
+  "log_level": "debug",  // 或 "info", "warn", "error"
+  ...
+}
+```
+
 ### 配置示例
 ```json
 {
   "version": "1.0",
+  "log_level": "error",
   "default_profile": "web-server",
   "profiles": [
     {
@@ -265,9 +298,9 @@ rdm --help
 ## 🔧 开发指南
 
 ### 添加新协议
-1. 在 `internal/protocol/interface.go` 中定义协议接口
+1. 在 `internal/protocol/manager.go` 中定义协议接口
 2. 在 `internal/protocol/` 下创建新协议目录
-3. 实现 `Protocol` 接口
+3. 实现协议接口
 4. 在配置模型中添加协议特有字段
 5. 在TUI中更新协议图标和显示逻辑
 
@@ -306,13 +339,14 @@ go test -cover ./...
 - 状态检查每3秒执行一次
 - 搜索功能实时过滤，性能优化
 - 内存占用低，适合长时间运行
+- 日志级别可配置，默认只输出error级别，减少日志噪音
 
 ## 🤝 贡献指南
 
 1. Fork 项目
-2. 创建功能分支 (`git checkout -b feature/AmazingFeature`)
-3. 提交更改 (`git commit -m 'Add some AmazingFeature'`)
-4. 推送到分支 (`git push origin feature/AmazingFeature`)
+2. 创建功能分支 (`git checkout -b feature/amazing-feature`)
+3. 提交更改 (`git commit -m 'Add some amazing feature'`)
+4. 推送到分支 (`git push origin feature/amazing-feature`)
 5. 开启 Pull Request
 
 ## 📄 许可证
@@ -322,7 +356,7 @@ go test -cover ./...
 ## 👏 致谢
 
 - [Bubble Tea](https://github.com/charmbracelet/bubbletea) - 优秀的Go TUI框架
-- [Viper](https://github.com/spf13/viper) - 强大的配置管理库
+- [Zap](https://go.uber.org/zap) - 高性能日志库
 - [Cobra](https://github.com/spf13/cobra) - Go命令行框架
 
 ---
