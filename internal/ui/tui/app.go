@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/exec"
+	"runtime"
 	"strings"
 	"time"
 	"unicode"
@@ -20,6 +20,28 @@ import (
 	"remote-desktop-manager/internal/ui/dialogs"
 	"remote-desktop-manager/pkg/models"
 )
+
+// 终端IOCTL常量（跨平台）
+// macOS (Darwin): TIOCGETA = 0x404C7413, TIOCSETA = 0x804C7414
+// Linux: TCGETS = 0x5401, TCSETS = 0x5402
+var (
+	tcGetTermios = uint(getTCGETS())
+	tcSetTermios = uint(getTCSETS())
+)
+
+func getTCGETS() uintptr {
+	if runtime.GOOS == "darwin" {
+		return 0x404C7413 // TIOCGETA on macOS
+	}
+	return unix.TCGETS
+}
+
+func getTCSETS() uintptr {
+	if runtime.GOOS == "darwin" {
+		return 0x804C7414 // TIOCSETA on macOS
+	}
+	return unix.TCSETS
+}
 
 // App 表示TUI应用程序
 type App struct {
@@ -257,21 +279,35 @@ func (a *App) executeConnection(host *models.Host) {
 func (a *App) promptRestart(execPath string) {
 	// 确保终端在正常模式
 	if fd := int(os.Stdin.Fd()); fd > 0 {
-		termios, err := unix.IoctlGetTermios(fd, unix.TCGETS)
+		termios, err := unix.IoctlGetTermios(fd, tcGetTermios)
 		if err == nil {
 			// 设置为 cooked mode
 			termios.Lflag |= unix.ICANON | unix.ECHO | unix.ISIG
-			unix.IoctlSetTermios(fd, unix.TCSETS, termios)
+			unix.IoctlSetTermios(fd, tcSetTermios, termios)
 		}
 	}
 
-	// 清空输入缓冲区
-	buf := make([]byte, 1024)
-	os.Stdin.Read(buf)
+	// 清空输入缓冲区（非阻塞方式）
+	if fd := int(os.Stdin.Fd()); fd > 0 {
+		// 使用O_NON标志设置非阻塞读取
+		flags, err := unix.FcntlInt(uintptr(fd), unix.F_GETFL, 0)
+		if err == nil {
+			unix.FcntlInt(uintptr(fd), unix.F_SETFL, flags|unix.O_NONBLOCK)
+			buf := make([]byte, 1024)
+			for {
+				_, readErr := os.Stdin.Read(buf)
+				if readErr != nil {
+					break // 没有更多数据可读
+				}
+			}
+			// 恢复阻塞模式
+			unix.FcntlInt(uintptr(fd), unix.F_SETFL, flags)
+		}
+	}
 
 	fmt.Println("\n按 Enter 键返回TUI，或按 Ctrl+C 退出...")
 
-	// 等待Enter键或Ctrl+C
+	// 等待Enter键
 	readBuf := make([]byte, 1)
 	for {
 		n, err := os.Stdin.Read(readBuf)
@@ -287,21 +323,13 @@ func (a *App) promptRestart(execPath string) {
 		}
 	}
 
-	// 重新启动程序
+	// 重新启动程序（使用exec替换当前进程）
 	fmt.Print("\033[2J\033[H") // 清屏
-	cmd := exec.Command(execPath)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	if err := cmd.Start(); err != nil {
+	err := unix.Exec(execPath, []string{execPath}, os.Environ())
+	if err != nil {
 		fmt.Printf("重启失败: %v\n", err)
 		os.Exit(1)
 	}
-
-	// 等待新进程
-	cmd.Wait()
-	os.Exit(0)
 }
 
 // Init 初始化应用程序，返回初始命令
