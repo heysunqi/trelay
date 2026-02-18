@@ -447,15 +447,28 @@ func (a *App) View() string {
 	title := a.renderTitle()
 	content += title + "\n\n"
 
-	// 主机列表
-	hostList := a.renderHostList()
-	content += hostList + "\n\n"
+	// 计算底部固定内容的高度
+	bottomContentHeight := 3 // 状态栏 + 帮助信息 + 分隔行
 
-	// 状态栏
+	// 计算主机列表可用高度
+	titleHeight := 1 + strings.Count(title, "\n") // 标题行数（包含换行）
+	availableHeight := a.height - titleHeight - bottomContentHeight
+
+	// 渲染主机列表（带高度限制）
+	hostList := a.renderHostListWithHeight(availableHeight)
+	content += hostList + "\n"
+
+	// 填充剩余空间（如果需要）
+	renderedHostHeight := 1 + strings.Count(hostList, "\n") // 主机列表行数
+	if renderedHostHeight < availableHeight {
+		content += strings.Repeat("\n", availableHeight-renderedHostHeight)
+	}
+
+	// 状态栏（固定在底部）
 	statusBar := a.renderStatusBar()
 	content += statusBar
 
-	// 帮助信息
+	// 帮助信息（固定在底部）
 	help := a.renderHelp()
 	content += "\n" + help
 
@@ -833,6 +846,27 @@ func (a *App) renderStatusBar() string {
 		Align(lipgloss.Right)
 
 	return statusStyle.Render(status)
+}
+
+// renderHostListWithHeight 渲染带高度限制的主机列表
+func (a *App) renderHostListWithHeight(maxHeight int) string {
+	fullList := a.renderHostList()
+	lines := strings.Split(fullList, "\n")
+
+	// 如果列表高度不超过最大高度，直接返回
+	if len(lines) <= maxHeight {
+		return fullList
+	}
+
+	// 计算可显示的主机项目数
+	// 标题 + 分隔线 + 主机项目数 + 最后一行空行
+	headerLines := 2 // 标题 + 分隔线
+	if maxHeight <= headerLines {
+		return strings.Join(lines[:maxHeight], "\n")
+	}
+
+	maxItems := maxHeight - headerLines
+	return strings.Join(lines[:headerLines+maxItems], "\n")
 }
 
 // renderHelp 渲染帮助信息
