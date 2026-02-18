@@ -20,7 +20,7 @@
 
 ### 整体架构
 ```
-┌─────────────────────────────────────────┐
+┌─────────────────────────────────┐
 │            CLI/TUI 界面层                │
 ├─────────────────────────────────────────┤
 │             业务逻辑层                   │
@@ -31,9 +31,9 @@
 
 ### 技术栈
 - **TUI框架**: [Bubble Tea](https://github.com/charmbracelet/bubbletea) - Go的TUI框架
-- **配置管理**: [Viper](https://github.com/spf13/viper) - 多格式配置支持
+- **配置管理**: 标准JSON配置，支持多级别日志
 - **CLI框架**: [Cobra](https://github.com/spf13/cobra) - 命令行参数解析
-- **日志系统**: [Zap](https://go.uber.org/zap) - 高性能日志库
+- **日志系统**: [Zap](https://go.uber.org/zap) - 高性能日志库，支持多级别输出
 - **SSH协议**: `golang.org/x/crypto/ssh` - Go标准SSH库
 - **RDP协议**: 计划中
 - **VNC协议**: 计划中
@@ -107,7 +107,7 @@ rdm
 # 指定配置文件
 rdm --config /path/to/config.json
 
-# 启用调试模式
+# 启用调试模式（输出所有日志）
 rdm --debug
 
 # 直接连接到指定名称的SSH主机（不启动TUI）
@@ -153,8 +153,8 @@ Flags:
 ### 状态栏说明
 ```
 主机: 1/2 | 在线: 2/2 | 分组: 2 | 选中: debian-server | 搜索: 'server' | 状态更新: 15:04:05
-└───────┘ └────────┘ └──────┘ └──────────────────┘ └───────────────┘ └─────────────┘
-  当前/过滤  在线/总数  分组数     当前选中主机        搜索关键词       最后状态检查
+└───────┘ └────────┘ └──────────────────┘ └───────────────┘ └─────────────┘ └─────────────┘ └───────────────┘ └─────────────┘ └───────────────┘ └─────────────┘ └───────────────┘
+ 当前/过滤  在线/总数  分组数     当前选中主机        搜索关键词       最后状态检查
 ```
 
 ## ⚙️ 配置文件
@@ -162,10 +162,29 @@ Flags:
 ### 配置文件位置
 默认配置文件路径：`~/.config/remote-desktop-manager/config.json`
 
+### 日志级别配置
+程序支持多级别日志输出，通过 `log_level` 字段控制：
+
+| 级别 | 说明 | 输出内容 |
+|------|------|----------|
+| `debug` | 所有日志 | 调试详细信息，包含所有级别 |
+| `info` | 信息及以上 | 常规运行信息，含info、warn、error |
+| `warn` | 警告及以上 | 警告和错误信息 |
+| `error` | 仅错误 | 默认级别，只输出错误日志 |
+
+**使用示例：**
+```json
+{
+  "log_level": "debug",  // 或 "info", "warn", "error"
+  ...
+}
+```
+
 ### 配置示例
 ```json
 {
   "version": "1.0",
+  "log_level": "error",
   "default_profile": "web-server",
   "profiles": [
     {
@@ -320,13 +339,14 @@ go test -cover ./...
 - 状态检查每3秒执行一次
 - 搜索功能实时过滤，性能优化
 - 内存占用低，适合长时间运行
+- 日志级别可配置，默认只输出error级别，减少日志噪音
 
 ## 🤝 贡献指南
 
 1. Fork 项目
-2. 创建功能分支 (`git checkout -b feature/AmazingFeature`)
-3. 提交更改 (`git commit -m 'Add some AmazingFeature'`)
-4. 推送到分支 (`git push origin feature/AmazingFeature`)
+2. 创建功能分支 (`git checkout -b feature/amazing-feature`)
+3. 提交更改 (`git commit -m 'Add some amazing feature'`)
+4. 推送到分支 (`git push origin feature/amazing-feature`)
 5. 开启 Pull Request
 
 ## 📄 许可证
@@ -336,7 +356,7 @@ go test -cover ./...
 ## 👏 致谢
 
 - [Bubble Tea](https://github.com/charmbracelet/bubbletea) - 优秀的Go TUI框架
-- [Viper](https://github.com/spf13/viper) - 强大的配置管理库
+- [Zap](https://go.uber.org/zap) - 高性能日志库
 - [Cobra](https://github.com/spf13/cobra) - Go命令行框架
 
 ---
