@@ -103,9 +103,17 @@ The detection chain:
 - `install_helper.go` - Detects package managers (apt/yum/dnf/pacman/apk) and generates install commands
 - `builder.go` - Command builder factory
 - `remmina_builder.go` - Builds `remmina --connect=rdp://...` commands
-- `freerdp_builder.go` - Builds `xfreerdp /v:... /u:... /p:...` commands
+- `freerdp_builder.go` - Builds `xfreerdp /v:... /u:... /p:...` commands with dynamic resolution support
 
 If no tool is found, the error includes platform-specific install help.
+
+### RDP Features
+
+- **Dynamic Resolution Adjustment**: Remote desktop resolution automatically adjusts to window size changes
+- **Platform-Specific Error Messages**: Friendly error messages with platform-specific solutions
+  - macOS: Instructions for installing XQuartz
+  - Linux: Instructions for X server setup
+  - Both: SSH X11 forwarding option
 
 ### Configuration Management
 
@@ -131,6 +139,7 @@ Hosts are organized into groups (plus "未分组" for ungrouped hosts):
 | `internal/protocol/ssh/client.go` | SSH implementation |
 | `internal/protocol/rdp/client.go` | RDP implementation |
 | `internal/protocol/rdp/detector.go` | RDP tool detection logic |
+| `internal/protocol/rdp/freerdp_builder.go` | FreeRDP command builder |
 | `pkg/models/host.go` | Host model with `Validate()` and `GetPort()` |
 | `pkg/models/config.go` | Config model with grouping logic |
 
@@ -149,3 +158,4 @@ Hosts are organized into groups (plus "未分组" for ungrouped hosts):
 - Passwords stored in plaintext in config file
 - `InsecureIgnoreHostKey()` used for SSH - production should validate host keys
 - macOS ioctl constants differ from Linux (see `app.go` constants)
+- Terminal state is restored properly after TUI exit (uses simple newline instead of ANSI sequences)
