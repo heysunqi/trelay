@@ -17,6 +17,7 @@ import (
 	"golang.org/x/sys/unix"
 	"remote-desktop-manager/internal/config"
 	"remote-desktop-manager/internal/protocol"
+	"remote-desktop-manager/internal/ui/dialogs"
 	"remote-desktop-manager/pkg/models"
 )
 
@@ -69,6 +70,10 @@ type App struct {
 	// 连接相关字段
 	connManager *protocol.Manager
 	connecting  bool // 是否正在连接，防止重复触发
+
+	// 新建连接对话框相关字段
+	showNewConnectionDialog bool            // 是否显示新建连接对话框
+	newConnectionDialog     *dialogs.NewConnectionDialog // 新建连接对话框实例
 }
 
 // NewApp 创建新的应用程序实例
@@ -299,6 +304,61 @@ func (a *App) Init() tea.Cmd {
 
 // Update 处理消息和更新状态
 func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// 如果显示新建连接对话框，先让对话框处理消息
+	if a.showNewConnectionDialog && a.newConnectionDialog != nil {
+		updated, cmd := a.newConnectionDialog.Update(msg)
+		a.newConnectionDialog = updated
+
+		// 检查对话框是否需要关闭
+		if a.newConnectionDialog.IsClosed() {
+			// 如果对话框是保存操作，保存主机配置
+			if a.newConnectionDialog.IsSaved() {
+				// 创建新主机配置
+				host := a.newConnectionDialog.CreateHostConfig()
+				// 添加到配置中
+				a.config.Profiles = append(a.config.Profiles, host)
+
+				// 检查分组是否存在，不存在则创建
+				groupName := a.newConnectionDialog.GetGroup()
+				if groupName != "" {
+					found := false
+					for _, g := range a.config.Groups {
+						if g.Name == groupName {
+							found = true
+							// 添加主机到分组
+							g.Profiles = append(g.Profiles, host.Name)
+							break
+						}
+					}
+					if !found {
+						// 创建新分组
+						newGroup := &models.Group{
+							Name:     groupName,
+							Profiles: []string{host.Name},
+						}
+						a.config.Groups = append(a.config.Groups, newGroup)
+					}
+				}
+
+				// 保存配置
+				if err := a.configMgr.Save(a.config); err != nil {
+					a.logger.Error("保存配置失败", zap.Error(err))
+				} else {
+					a.logger.Info("新建主机配置已保存", zap.String("name", host.Name))
+				}
+
+				// 刷新主机列表
+				a.refreshHosts()
+			}
+
+			// 关闭对话框
+			a.showNewConnectionDialog = false
+			a.newConnectionDialog = nil
+		}
+
+		return a, cmd
+	}
+
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		// 处理窗口大小变化
@@ -376,6 +436,16 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return a, nil
 
+		case "N", "n":
+			// 显示新建连接对话框
+			a.showNewConnectionDialog = true
+			var groupNames []string
+			for _, group := range a.config.Groups {
+				groupNames = append(groupNames, group.Name)
+			}
+			a.newConnectionDialog = dialogs.NewNewConnectionDialog(groupNames)
+			return a, nil
+
 		case "r":
 			// 刷新配置
 			if cfg, err := a.configMgr.Load(); err == nil {
@@ -439,6 +509,13 @@ func (a *App) View() string {
 
 	if a.quitting {
 		return "再见！\n"
+	}
+
+	// 如果显示新建连接对话框
+	if a.showNewConnectionDialog && a.newConnectionDialog != nil {
+		var dialogView string
+		dialogView += a.newConnectionDialog.View()
+		return dialogView
 	}
 
 	var content string
@@ -843,7 +920,7 @@ func (a *App) renderStatusBar() string {
 	statusStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#00aa00")).
 		Width(a.width - 4).
-		Align(lipgloss.Right)
+		Align(lipgloss.Center)
 
 	return statusStyle.Render(status)
 }
@@ -873,8 +950,10 @@ func (a *App) renderHostListWithHeight(maxHeight int) string {
 func (a *App) renderHelp() string {
 	helpStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#888888")).
-		Italic(true)
-	helpText := "键盘: ↑↓ 选择 | Enter 连接 | Tab 分组 | / 搜索 | R 刷新 | Q 退出"
+		Italic(true).
+		Width(a.width - 4).
+		Align(lipgloss.Center)
+	helpText := "键盘: ↑↓ 选择 | Enter 连接 | Tab 分组 | / 搜索 | R 刷新 | N 新建 | Q 退出"
 
 	return helpStyle.Render(helpText)
 }
