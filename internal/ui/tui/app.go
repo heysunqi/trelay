@@ -17,6 +17,7 @@ import (
 	"golang.org/x/sys/unix"
 	"remote-desktop-manager/internal/config"
 	"remote-desktop-manager/internal/protocol"
+	"remote-desktop-manager/internal/ui/dialogs"
 	"remote-desktop-manager/pkg/models"
 )
 
@@ -69,6 +70,10 @@ type App struct {
 	// 连接相关字段
 	connManager *protocol.Manager
 	connecting  bool // 是否正在连接，防止重复触发
+
+	// 新建连接对话框相关字段
+	showNewConnectionDialog bool            // 是否显示新建连接对话框
+	newConnectionDialog     *dialogs.NewConnectionDialog // 新建连接对话框实例
 }
 
 // NewApp 创建新的应用程序实例
@@ -299,6 +304,61 @@ func (a *App) Init() tea.Cmd {
 
 // Update 处理消息和更新状态
 func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// 如果显示新建连接对话框，先让对话框处理消息
+	if a.showNewConnectionDialog && a.newConnectionDialog != nil {
+		updated, cmd := a.newConnectionDialog.Update(msg)
+		a.newConnectionDialog = updated
+
+		// 检查对话框是否需要关闭
+		if a.newConnectionDialog.IsClosed() {
+			// 如果对话框是保存操作，保存主机配置
+			if a.newConnectionDialog.IsSaved() {
+				// 创建新主机配置
+				host := a.newConnectionDialog.CreateHostConfig()
+				// 添加到配置中
+				a.config.Profiles = append(a.config.Profiles, host)
+
+				// 检查分组是否存在，不存在则创建
+				groupName := a.newConnectionDialog.GetGroup()
+				if groupName != "" {
+					found := false
+					for _, g := range a.config.Groups {
+						if g.Name == groupName {
+							found = true
+							// 添加主机到分组
+							g.Profiles = append(g.Profiles, host.Name)
+							break
+						}
+					}
+					if !found {
+						// 创建新分组
+						newGroup := &models.Group{
+							Name:     groupName,
+							Profiles: []string{host.Name},
+						}
+						a.config.Groups = append(a.config.Groups, newGroup)
+					}
+				}
+
+				// 保存配置
+				if err := a.configMgr.Save(a.config); err != nil {
+					a.logger.Error("保存配置失败", zap.Error(err))
+				} else {
+					a.logger.Info("新建主机配置已保存", zap.String("name", host.Name))
+				}
+
+				// 刷新主机列表
+				a.refreshHosts()
+			}
+
+			// 关闭对话框
+			a.showNewConnectionDialog = false
+			a.newConnectionDialog = nil
+		}
+
+		return a, cmd
+	}
+
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		// 处理窗口大小变化
@@ -316,7 +376,48 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.statusCheckCmd()
 
 	case tea.KeyMsg:
-		// 处理键盘输入
+		// 搜索模式下的输入处理优先
+		if a.searchMode {
+			switch msg.Type {
+			case tea.KeyEsc:
+				// 退出搜索模式
+				a.toggleSearchMode()
+			case tea.KeyBackspace, tea.KeyDelete:
+				// 删除字符
+				if len(a.searchQuery) > 0 && a.searchCursor > 0 {
+					a.searchQuery = a.searchQuery[:a.searchCursor-1] + a.searchQuery[a.searchCursor:]
+					a.searchCursor--
+					a.applySearchFilter()
+				}
+			case tea.KeyLeft:
+				// 左移光标
+				if a.searchCursor > 0 {
+					a.searchCursor--
+				}
+			case tea.KeyRight:
+				// 右移光标
+				if a.searchCursor < len(a.searchQuery) {
+					a.searchCursor++
+				}
+			case tea.KeyHome:
+				// 移动到开头
+				a.searchCursor = 0
+			case tea.KeyEnd:
+				// 移动到结尾
+				a.searchCursor = len(a.searchQuery)
+			default:
+				// 普通字符输入
+				if msg.Runes != nil && len(msg.Runes) > 0 {
+					r := string(msg.Runes)
+					a.searchQuery = a.searchQuery[:a.searchCursor] + r + a.searchQuery[a.searchCursor:]
+					a.searchCursor += len(r)
+					a.applySearchFilter()
+				}
+			}
+			return a, nil
+		}
+
+		// 非搜索模式下的键盘事件处理
 		switch msg.String() {
 		case "q", "ctrl+c":
 			// 退出程序
@@ -324,15 +425,8 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, tea.Quit
 
 		case "/":
-			// 进入/退出搜索模式
+			// 进入搜索模式
 			a.toggleSearchMode()
-			return a, nil
-
-		case "esc":
-			// 退出搜索模式
-			if a.searchMode {
-				a.toggleSearchMode()
-			}
 			return a, nil
 
 		case "up", "k":
@@ -374,6 +468,16 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					a.refreshHosts()
 				}
 			}
+			return a, nil
+
+		case "N", "n":
+			// 显示新建连接对话框
+			a.showNewConnectionDialog = true
+			var groupNames []string
+			for _, group := range a.config.Groups {
+				groupNames = append(groupNames, group.Name)
+			}
+			a.newConnectionDialog = dialogs.NewNewConnectionDialog(groupNames, a.width, a.height)
 			return a, nil
 
 		case "r":
@@ -441,21 +545,41 @@ func (a *App) View() string {
 		return "再见！\n"
 	}
 
+	// 如果显示新建连接对话框
+	if a.showNewConnectionDialog && a.newConnectionDialog != nil {
+		var dialogView string
+		dialogView += a.newConnectionDialog.View()
+		return dialogView
+	}
+
 	var content string
 
 	// 标题
 	title := a.renderTitle()
 	content += title + "\n\n"
 
-	// 主机列表
-	hostList := a.renderHostList()
-	content += hostList + "\n\n"
+	// 计算底部固定内容的高度
+	bottomContentHeight := 3 // 状态栏 + 帮助信息 + 分隔行
 
-	// 状态栏
+	// 计算主机列表可用高度
+	titleHeight := 1 + strings.Count(title, "\n") // 标题行数（包含换行）
+	availableHeight := a.height - titleHeight - bottomContentHeight
+
+	// 渲染主机列表（带高度限制）
+	hostList := a.renderHostListWithHeight(availableHeight)
+	content += hostList + "\n"
+
+	// 填充剩余空间（如果需要）
+	renderedHostHeight := 1 + strings.Count(hostList, "\n") // 主机列表行数
+	if renderedHostHeight < availableHeight {
+		content += strings.Repeat("\n", availableHeight-renderedHostHeight)
+	}
+
+	// 状态栏（固定在底部）
 	statusBar := a.renderStatusBar()
 	content += statusBar
 
-	// 帮助信息
+	// 帮助信息（固定在底部）
 	help := a.renderHelp()
 	content += "\n" + help
 
@@ -830,17 +954,40 @@ func (a *App) renderStatusBar() string {
 	statusStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#00aa00")).
 		Width(a.width - 4).
-		Align(lipgloss.Right)
+		Align(lipgloss.Center)
 
 	return statusStyle.Render(status)
+}
+
+// renderHostListWithHeight 渲染带高度限制的主机列表
+func (a *App) renderHostListWithHeight(maxHeight int) string {
+	fullList := a.renderHostList()
+	lines := strings.Split(fullList, "\n")
+
+	// 如果列表高度不超过最大高度，直接返回
+	if len(lines) <= maxHeight {
+		return fullList
+	}
+
+	// 计算可显示的主机项目数
+	// 标题 + 分隔线 + 主机项目数 + 最后一行空行
+	headerLines := 2 // 标题 + 分隔线
+	if maxHeight <= headerLines {
+		return strings.Join(lines[:maxHeight], "\n")
+	}
+
+	maxItems := maxHeight - headerLines
+	return strings.Join(lines[:headerLines+maxItems], "\n")
 }
 
 // renderHelp 渲染帮助信息
 func (a *App) renderHelp() string {
 	helpStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#888888")).
-		Italic(true)
-	helpText := "键盘: ↑↓ 选择 | Enter 连接 | Tab 分组 | / 搜索 | R 刷新 | Q 退出"
+		Italic(true).
+		Width(a.width - 4).
+		Align(lipgloss.Center)
+	helpText := "键盘: ↑↓ 选择 | Enter 连接 | Tab 分组 | / 搜索 | R 刷新 | N 新建 | Q 退出"
 
 	return helpStyle.Render(helpText)
 }
