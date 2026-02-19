@@ -224,15 +224,32 @@ func (a *App) executeConnection(host *models.Host) {
 		return
 	}
 
-	// 使用 syscall.Exec 直接替换当前进程运行直接SSH连接
+	// 根据协议类型构建命令
+	var args []string
+	args = append(args, execPath)
+
+	switch host.Protocol {
+	case "ssh":
+		args = append(args, "--direct-ssh", host.Name)
+	case "rdp":
+		args = append(args, "--direct-rdp", host.Name)
+	default:
+		a.logger.Error("不支持的协议", zap.String("protocol", host.Protocol))
+		fmt.Printf("不支持的协议: %s\n", host.Protocol)
+		return
+	}
+
+	args = append(args, "--return-to-rdm")
+
+	// 使用 syscall.Exec 直接替换当前进程运行直接连接
 	// 这样可以完全控制终端，避免与Bubble Tea事件循环的冲突
 	a.quitting = true
-	err = syscall.Exec(execPath, []string{execPath, "--direct-ssh", host.Name, "--return-to-rdm"}, os.Environ())
+	err = syscall.Exec(execPath, args, os.Environ())
 
 	// 如果 syscall.Exec 返回，说明执行失败
 	if err != nil {
-		a.logger.Error("启动直接SSH连接失败", zap.Error(err))
-		fmt.Printf("启动直接SSH连接失败: %v\n", err)
+		a.logger.Error("启动直接连接失败", zap.Error(err))
+		fmt.Printf("启动直接连接失败: %v\n", err)
 	}
 }
 
