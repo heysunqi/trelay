@@ -44,10 +44,14 @@ type NewConnectionDialog struct {
 	canceled bool // 是否取消操作
 	closed   bool // 对话框是否应该关闭
 	saved    bool // 是否成功保存配置
+
+	// 终端尺寸（用于居中显示）
+	width  int
+	height int
 }
 
 // NewNewConnectionDialog 创建新建连接配置对话框
-func NewNewConnectionDialog(groups []string) *NewConnectionDialog {
+func NewNewConnectionDialog(groups []string, width, height int) *NewConnectionDialog {
 	// 格式化分组选项，确保"未分组"选项可用
 	var formattedGroups []string
 	if len(groups) > 0 {
@@ -84,6 +88,10 @@ func NewNewConnectionDialog(groups []string) *NewConnectionDialog {
 		protocol: "ssh",
 		authMethod: "password",
 		groupInput: "未分组",
+
+		// 终端尺寸
+		width: width,
+		height: height,
 	}
 }
 
@@ -95,6 +103,11 @@ func (d *NewConnectionDialog) Init() tea.Cmd {
 // Update 更新对话框状态
 func (d *NewConnectionDialog) Update(msg tea.Msg) (*NewConnectionDialog, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		// 更新终端尺寸信息
+		d.width = msg.Width
+		d.height = msg.Height
+		return d, nil
 	case tea.KeyMsg:
 		switch msg.Type {
 		// 取消操作
@@ -343,7 +356,47 @@ func (d *NewConnectionDialog) View() string {
 	content.WriteString("\n")
 	content.WriteString(hintStyle.Render("使用 ↑/↓ 导航，Enter 确认，Tab 切换字段，Esc 取消"))
 
-	return dialogStyle.Render(content.String())
+	// 渲染对话框内容
+	dialogContent := dialogStyle.Render(content.String())
+
+	// 如果有终端尺寸信息，计算居中显示
+	if d.width > 0 && d.height > 0 {
+		dialogLines := strings.Split(dialogContent, "\n")
+		dialogHeight := len(dialogLines)
+		dialogWidth := 0
+		for _, line := range dialogLines {
+			if len(line) > dialogWidth {
+				dialogWidth = len(line)
+			}
+		}
+
+		// 计算水平居中
+		horizontalPadding := (d.width - dialogWidth) / 2
+		if horizontalPadding < 0 {
+			horizontalPadding = 0
+		}
+		paddingStr := strings.Repeat(" ", horizontalPadding)
+
+		// 计算垂直居中
+		verticalPadding := (d.height - dialogHeight) / 2
+		if verticalPadding < 0 {
+			verticalPadding = 0
+		}
+
+		// 构建居中的对话框
+		var centeredContent strings.Builder
+		centeredContent.WriteString(strings.Repeat("\n", verticalPadding))
+		for _, line := range dialogLines {
+			centeredContent.WriteString(paddingStr)
+			centeredContent.WriteString(line)
+			centeredContent.WriteString("\n")
+		}
+
+		return centeredContent.String()
+	}
+
+	// 如果没有终端尺寸信息，直接返回原始内容
+	return dialogContent
 }
 
 // 渲染文本输入字段

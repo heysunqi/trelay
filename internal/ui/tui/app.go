@@ -376,7 +376,48 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.statusCheckCmd()
 
 	case tea.KeyMsg:
-		// 处理键盘输入
+		// 搜索模式下的输入处理优先
+		if a.searchMode {
+			switch msg.Type {
+			case tea.KeyEsc:
+				// 退出搜索模式
+				a.toggleSearchMode()
+			case tea.KeyBackspace, tea.KeyDelete:
+				// 删除字符
+				if len(a.searchQuery) > 0 && a.searchCursor > 0 {
+					a.searchQuery = a.searchQuery[:a.searchCursor-1] + a.searchQuery[a.searchCursor:]
+					a.searchCursor--
+					a.applySearchFilter()
+				}
+			case tea.KeyLeft:
+				// 左移光标
+				if a.searchCursor > 0 {
+					a.searchCursor--
+				}
+			case tea.KeyRight:
+				// 右移光标
+				if a.searchCursor < len(a.searchQuery) {
+					a.searchCursor++
+				}
+			case tea.KeyHome:
+				// 移动到开头
+				a.searchCursor = 0
+			case tea.KeyEnd:
+				// 移动到结尾
+				a.searchCursor = len(a.searchQuery)
+			default:
+				// 普通字符输入
+				if msg.Runes != nil && len(msg.Runes) > 0 {
+					r := string(msg.Runes)
+					a.searchQuery = a.searchQuery[:a.searchCursor] + r + a.searchQuery[a.searchCursor:]
+					a.searchCursor += len(r)
+					a.applySearchFilter()
+				}
+			}
+			return a, nil
+		}
+
+		// 非搜索模式下的键盘事件处理
 		switch msg.String() {
 		case "q", "ctrl+c":
 			// 退出程序
@@ -384,15 +425,8 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, tea.Quit
 
 		case "/":
-			// 进入/退出搜索模式
+			// 进入搜索模式
 			a.toggleSearchMode()
-			return a, nil
-
-		case "esc":
-			// 退出搜索模式
-			if a.searchMode {
-				a.toggleSearchMode()
-			}
 			return a, nil
 
 		case "up", "k":
@@ -443,7 +477,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			for _, group := range a.config.Groups {
 				groupNames = append(groupNames, group.Name)
 			}
-			a.newConnectionDialog = dialogs.NewNewConnectionDialog(groupNames)
+			a.newConnectionDialog = dialogs.NewNewConnectionDialog(groupNames, a.width, a.height)
 			return a, nil
 
 		case "r":
