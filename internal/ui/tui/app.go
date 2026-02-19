@@ -302,9 +302,12 @@ func (a *App) promptRestart(execPath string) {
 	}
 
 	// 重新启动程序（使用exec替换当前进程）
-	fmt.Print("\033[2J\033[H") // 清屏
-	err := unix.Exec(execPath, []string{execPath}, os.Environ())
+	// 使用更安全的清屏方式，避免在某些终端上显示乱码
+	fmt.Print("\n\n") // 简单换行清屏
+	err := syscall.Exec(execPath, []string{execPath}, os.Environ())
 	if err != nil {
+		// syscall.Exec 失败通常不会返回，因为进程已经被替换
+		// 这里只是为了编译通过
 		fmt.Printf("重启失败: %v\n", err)
 		os.Exit(1)
 	}
