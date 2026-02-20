@@ -283,6 +283,14 @@ func runRoot(cmd *cobra.Command, args []string) {
 		logger.Error("应用程序运行失败", zap.Error(err))
 		os.Exit(1)
 	}
+
+	// TUI退出后恢复终端状态，确保终端输出格式正常
+	// 发送恢复序列到标准输出
+	fmt.Print("\033[?1049l") // 退出备用屏幕（如果还在备用屏幕中）
+	fmt.Print("\033[?1000l") // 禁用鼠标追踪
+	fmt.Print("\033[?1006l") // 禁用SGR鼠标追踪
+	fmt.Print("\033[?1015l") // 禁用URXVT鼠标追踪
+	fmt.Print("\r\n")        // 换行确保新行
 }
 
 // main 程序入口
