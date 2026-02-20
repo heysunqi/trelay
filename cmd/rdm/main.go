@@ -10,6 +10,7 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"remote-desktop-manager/internal/config"
+	"remote-desktop-manager/internal/protocol/rdp"
 	"remote-desktop-manager/internal/protocol/ssh"
 	"remote-desktop-manager/internal/ui/tui"
 	"remote-desktop-manager/pkg/models"
@@ -20,7 +21,9 @@ var (
 	configPath  string
 	debugMode   bool
 	directSSH   string // 直接SSH连接的主机名
-	returnToRDM bool   // SSH连接结束后是否返回RDM界面
+	directRDP   string // 直接RDP连接的主机名
+	returnToRDM bool   // 连接结束后是否返回RDM界面
+	password    string // SSH密码参数
 
 	// 全局日志器
 	logger *zap.Logger
@@ -42,7 +45,9 @@ func init() {
 	rootCmd.PersistentFlags().StringVarP(&configPath, "config", "c", "", "配置文件路径")
 	rootCmd.PersistentFlags().BoolVarP(&debugMode, "debug", "d", false, "启用调试模式")
 	rootCmd.PersistentFlags().StringVarP(&directSSH, "direct-ssh", "", "", "直接连接到指定名称的SSH主机（不启动TUI）")
-	rootCmd.PersistentFlags().BoolVarP(&returnToRDM, "return-to-rdm", "", false, "SSH连接结束后返回RDM界面")
+	rootCmd.PersistentFlags().StringVarP(&directRDP, "direct-rdp", "", "", "直接连接到指定名称的RDP主机（不启动TUI）")
+	rootCmd.PersistentFlags().BoolVarP(&returnToRDM, "return-to-rdm", "", false, "连接结束后返回RDM界面")
+	rootCmd.PersistentFlags().StringVarP(&password, "password", "p", "", "SSH连接密码（不推荐在命令行中使用，建议在TUI中输入）")
 }
 
 // initLogger 初始化日志器
@@ -84,10 +89,80 @@ func initLogger(logLevel string) error {
 	return nil
 }
 
+// runDirectConnection 执行直接连接（SSH或RDP）
+func runDirectConnection(host *models.Host, protocolType string) error {
+	switch protocolType {
+	case "ssh":
+		// 如果命令行参数中提供了密码，则使用该密码
+		if password != "" {
+			host.Password = password
+		}
+
+		client := ssh.NewClient(host)
+
+		if err := client.Connect(); err != nil {
+			return fmt.Errorf("SSH连接失败: %w", err)
+		}
+
+		fmt.Printf("已连接到 %s\n", host.Name)
+		logger.Debug("SSH连接成功", zap.String("host", host.Name))
+
+		// 启动交互式会话
+		if err := client.StartInteractiveSession(); err != nil {
+			logger.Error("SSH会话错误", zap.String("host", host.Name), zap.Error(err))
+		}
+
+		client.Disconnect()
+		fmt.Printf("\n已断开与 %s 的连接\n", host.Name)
+
+	case "rdp":
+		fmt.Printf("准备连接到 %s...\n", host.Name)
+		logger.Info("开始RDP直接连接",
+			zap.String("host", host.Name),
+			zap.String("address", host.Host),
+			zap.Int("port", host.Port))
+
+		client := rdp.NewClient(host)
+
+		if err := client.Connect(); err != nil {
+			logger.Error("RDP连接失败", zap.Error(err))
+			return err
+		}
+
+		toolName := client.GetToolName()
+		fmt.Printf("正在使用 %s 连接到 %s...\n", toolName, host.Name)
+		logger.Info("RDP连接启动成功",
+			zap.String("host", host.Name),
+			zap.String("tool", toolName))
+
+		// 启动交互式会话
+		logger.Info("进入RDP会话...")
+		if err := client.StartInteractiveSession(); err != nil {
+			logger.Error("RDP会话错误",
+				zap.String("host", host.Name),
+				zap.Error(err))
+			fmt.Printf("\nRDP会话错误: %v\n", err)
+		} else {
+			logger.Info("RDP会话正常结束")
+		}
+
+		client.Disconnect()
+		fmt.Printf("\n已断开与 %s 的连接\n", host.Name)
+
+	default:
+		return fmt.Errorf("不支持的协议: %s", protocolType)
+	}
+
+	return nil
+}
+
 // runRoot 运行根命令
 func runRoot(cmd *cobra.Command, args []string) {
 	// 创建配置管理器（先用临时logger加载配置）
-	tempLogger, err := zap.NewDevelopment() // 使用临时logger
+	// 使用生产模式的日志器，默认级别为Error，避免打印不必要的调试信息
+	tempConfig := zap.NewProductionConfig()
+	tempConfig.Level.SetLevel(zapcore.ErrorLevel)
+	tempLogger, err := tempConfig.Build()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "创建临时日志器失败: %v\n", err)
 		os.Exit(1)
@@ -120,54 +195,57 @@ func runRoot(cmd *cobra.Command, args []string) {
 	// 重新创建配置管理器（使用实际的logger）
 	mgr = config.NewConfigManager(logger)
 
-	// 处理直接SSH连接
-	if directSSH != "" {
-		logger.Info("直接SSH连接模式", zap.String("host", directSSH))
+	// 处理直接SSH/RDP连接
+	if directSSH != "" || directRDP != "" {
+		// 确定连接类型和主机名
+		var directHost string
+		var protocolType string
+
+		if directSSH != "" {
+			directHost = directSSH
+			protocolType = "ssh"
+		} else {
+			directHost = directRDP
+			protocolType = "rdp"
+		}
+
+		logger.Info(fmt.Sprintf("直接%s连接模式", strings.ToUpper(protocolType)), zap.String("host", directHost))
 
 		// 查找主机配置
 		var targetHost *models.Host
 		for _, host := range cfg.Profiles {
-			if host.Name == directSSH {
+			if host.Name == directHost {
 				targetHost = host
 				break
 			}
 		}
 
 		if targetHost == nil {
-			logger.Error("主机配置未找到", zap.String("host", directSSH))
-			fmt.Fprintf(os.Stderr, "主机配置未找到: %s\n", directSSH)
+			logger.Error("主机配置未找到", zap.String("host", directHost))
+			fmt.Fprintf(os.Stderr, "主机配置未找到: %s\n", directHost)
 			os.Exit(1)
 		}
 
-		if targetHost.Protocol != "ssh" {
-			logger.Error("主机协议不支持SSH", zap.String("host", directSSH), zap.String("protocol", targetHost.Protocol))
-			fmt.Fprintf(os.Stderr, "主机 %s 的协议不支持SSH: %s\n", directSSH, targetHost.Protocol)
+		// 验证协议
+		if targetHost.Protocol != protocolType {
+			logger.Error(fmt.Sprintf("主机协议不支持%s", strings.ToUpper(protocolType)),
+				zap.String("host", directHost), zap.String("protocol", targetHost.Protocol))
+			fmt.Fprintf(os.Stderr, "主机 %s 的协议不支持%s: %s\n", directHost, strings.ToUpper(protocolType), targetHost.Protocol)
 			os.Exit(1)
 		}
 
-		// 连接SSH
-		client := ssh.NewClient(targetHost)
-
-		if err := client.Connect(); err != nil {
-			logger.Error("SSH连接失败", zap.String("host", directSSH), zap.Error(err))
-			fmt.Fprintf(os.Stderr, "SSH连接失败: %v\n", err)
+		// 执行直接连接
+		if err := runDirectConnection(targetHost, protocolType); err != nil {
+			logger.Error(fmt.Sprintf("%s连接失败", strings.ToUpper(protocolType)),
+				zap.String("host", directHost), zap.Error(err))
+			fmt.Fprintf(os.Stderr, "%s\n", err)
 			os.Exit(1)
 		}
-
-		fmt.Printf("已连接到 %s\n", directSSH)
-		logger.Debug("SSH连接成功", zap.String("host", directSSH))
-
-		// 启动交互式会话
-		if err := client.StartInteractiveSession(); err != nil {
-			logger.Error("SSH会话错误", zap.String("host", directSSH), zap.Error(err))
-		}
-
-		client.Disconnect()
-		fmt.Printf("\n已断开与 %s 的连接\n", directSSH)
 
 		// 如果需要返回RDM界面，重新启动程序
 		if returnToRDM {
 			fmt.Println("\n正在返回RDM界面...")
+			logger.Info("准备返回RDM界面")
 			// 获取当前可执行文件路径
 			execPath, err := os.Executable()
 			if err == nil {
@@ -179,7 +257,15 @@ func runRoot(cmd *cobra.Command, args []string) {
 					args = append(args, "--debug")
 				}
 				// 使用 syscall.Exec 重新启动RDM程序
-				_ = syscall.Exec(execPath, args, os.Environ())
+				logger.Info("执行syscall.Exec重新启动RDM", zap.Strings("args", args))
+				err = syscall.Exec(execPath, args, os.Environ())
+				if err != nil {
+					logger.Error("syscall.Exec失败", zap.Error(err))
+					fmt.Fprintf(os.Stderr, "返回RDM界面失败: %v\n", err)
+				}
+			} else {
+				logger.Error("获取可执行文件路径失败", zap.Error(err))
+				fmt.Fprintf(os.Stderr, "无法返回RDM界面: %v\n", err)
 			}
 		}
 

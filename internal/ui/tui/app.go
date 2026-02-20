@@ -74,6 +74,10 @@ type App struct {
 	// 新建连接对话框相关字段
 	showNewConnectionDialog bool            // 是否显示新建连接对话框
 	newConnectionDialog     *dialogs.NewConnectionDialog // 新建连接对话框实例
+
+	// 密码输入对话框相关字段
+	showPasswordDialog bool            // 是否显示密码输入对话框
+	passwordDialog     *dialogs.PasswordDialog // 密码输入对话框实例
 }
 
 // NewApp 创建新的应用程序实例
@@ -224,15 +228,36 @@ func (a *App) executeConnection(host *models.Host) {
 		return
 	}
 
-	// 使用 syscall.Exec 直接替换当前进程运行直接SSH连接
+	// 根据协议类型构建命令
+	var args []string
+	args = append(args, execPath)
+
+	switch host.Protocol {
+	case "ssh":
+		args = append(args, "--direct-ssh", host.Name)
+		// 如果主机配置了密码，则传递密码参数
+		if host.Password != "" {
+			args = append(args, "--password", host.Password)
+		}
+	case "rdp":
+		args = append(args, "--direct-rdp", host.Name)
+	default:
+		a.logger.Error("不支持的协议", zap.String("protocol", host.Protocol))
+		fmt.Printf("不支持的协议: %s\n", host.Protocol)
+		return
+	}
+
+	args = append(args, "--return-to-rdm")
+
+	// 使用 syscall.Exec 直接替换当前进程运行直接连接
 	// 这样可以完全控制终端，避免与Bubble Tea事件循环的冲突
 	a.quitting = true
-	err = syscall.Exec(execPath, []string{execPath, "--direct-ssh", host.Name, "--return-to-rdm"}, os.Environ())
+	err = syscall.Exec(execPath, args, os.Environ())
 
 	// 如果 syscall.Exec 返回，说明执行失败
 	if err != nil {
-		a.logger.Error("启动直接SSH连接失败", zap.Error(err))
-		fmt.Printf("启动直接SSH连接失败: %v\n", err)
+		a.logger.Error("启动直接连接失败", zap.Error(err))
+		fmt.Printf("启动直接连接失败: %v\n", err)
 	}
 }
 
@@ -285,9 +310,12 @@ func (a *App) promptRestart(execPath string) {
 	}
 
 	// 重新启动程序（使用exec替换当前进程）
-	fmt.Print("\033[2J\033[H") // 清屏
-	err := unix.Exec(execPath, []string{execPath}, os.Environ())
+	// 使用更安全的清屏方式，避免在某些终端上显示乱码
+	fmt.Print("\n\n") // 简单换行清屏
+	err := syscall.Exec(execPath, []string{execPath}, os.Environ())
 	if err != nil {
+		// syscall.Exec 失败通常不会返回，因为进程已经被替换
+		// 这里只是为了编译通过
 		fmt.Printf("重启失败: %v\n", err)
 		os.Exit(1)
 	}
@@ -298,12 +326,39 @@ func (a *App) Init() tea.Cmd {
 	// 初始状态检查
 	a.checkHostStatus()
 
-	// 返回定时状态检查命令
-	return a.statusCheckCmd()
+	// 首先获取终端尺寸
+	return tea.Sequence(
+		tea.WindowSize(), // 获取终端尺寸命令
+		a.statusCheckCmd(), // 状态检查命令
+	)
 }
 
 // Update 处理消息和更新状态
 func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// 如果显示密码输入对话框，先让对话框处理消息
+	if a.showPasswordDialog && a.passwordDialog != nil {
+		updated, cmd := a.passwordDialog.Update(msg)
+		a.passwordDialog = updated
+
+		// 检查对话框是否需要关闭
+		if a.passwordDialog.IsClosed() {
+			// 如果用户提交了密码，则执行连接
+			if a.passwordDialog.IsSubmitted() {
+				host := a.passwordDialog.Host()
+				// 设置密码
+				host.Password = a.passwordDialog.GetPassword()
+				// 执行连接
+				a.executeConnection(host)
+			}
+			// 关闭对话框
+			a.showPasswordDialog = false
+			a.passwordDialog = nil
+			a.connecting = false // 重置连接标志
+		}
+
+		return a, cmd
+	}
+
 	// 如果显示新建连接对话框，先让对话框处理消息
 	if a.showNewConnectionDialog && a.newConnectionDialog != nil {
 		updated, cmd := a.newConnectionDialog.Update(msg)
@@ -448,7 +503,16 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if len(a.filteredHosts) > 0 && a.selected < len(a.filteredHosts) && !a.connecting {
 				host := a.filteredHosts[a.selected]
 				a.connecting = true // 设置连接标志，防止重复触发
-				a.executeConnection(host)
+
+				// 检查是否是SSH协议且没有配置密码或密钥
+				if host.Protocol == "ssh" && host.Password == "" && host.KeyPath == "" {
+					// 显示密码输入对话框
+					a.showPasswordDialog = true
+					a.passwordDialog = dialogs.NewPasswordDialog(host, a.width, a.height)
+				} else {
+					// 直接执行连接
+					a.executeConnection(host)
+				}
 			}
 			return a, nil
 
@@ -543,6 +607,13 @@ func (a *App) View() string {
 
 	if a.quitting {
 		return "再见！\n"
+	}
+
+	// 如果显示密码输入对话框
+	if a.showPasswordDialog && a.passwordDialog != nil {
+		var dialogView string
+		dialogView += a.passwordDialog.View()
+		return dialogView
 	}
 
 	// 如果显示新建连接对话框
