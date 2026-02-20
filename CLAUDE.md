@@ -17,6 +17,18 @@ make run-debug
 # Build and install to system
 make install
 
+# Uninstall from system
+make uninstall
+
+# Clean build artifacts
+make clean
+
+# Build cross-platform binaries
+make build-all     # Linux, macOS (amd64/arm64), Windows
+make build-linux   # Linux amd64
+make build-darwin  # macOS amd64 and arm64
+make build-windows # Windows amd64
+
 # Run with specific config file
 ./trelay --config /path/to/config.json
 
@@ -35,8 +47,8 @@ go vet ./...
 # Run tests (no tests exist yet)
 go test ./...
 
-# Clean build artifacts
-make clean
+# Format code
+make fmt
 ```
 
 ## Architecture Overview
@@ -170,6 +182,7 @@ Hosts are organized into groups (plus "未分组" for ungrouped hosts):
 - Passwords stored in plaintext in config file (password prompt added for security)
 - `InsecureIgnoreHostKey()` used for SSH - production should validate host keys
 - macOS ioctl constants differ from Linux (see `app.go` constants)
-- Terminal state is restored properly after TUI exit (uses simple newline instead of ANSI sequences)
+- Terminal state is restored properly after TUI exit (sends ANSI escape sequences to restore terminal settings)
+- TUI exit sends escape sequences to restore terminal state: exit alt screen, disable mouse tracking
 - Password prompt dialog implemented for SSH connections without stored passwords
 - All dialogs now use `lipgloss.Place` for perfect horizontal and vertical centering
