@@ -74,6 +74,10 @@ type App struct {
 	// 新建连接对话框相关字段
 	showNewConnectionDialog bool            // 是否显示新建连接对话框
 	newConnectionDialog     *dialogs.NewConnectionDialog // 新建连接对话框实例
+
+	// 密码输入对话框相关字段
+	showPasswordDialog bool            // 是否显示密码输入对话框
+	passwordDialog     *dialogs.PasswordDialog // 密码输入对话框实例
 }
 
 // NewApp 创建新的应用程序实例
@@ -231,6 +235,10 @@ func (a *App) executeConnection(host *models.Host) {
 	switch host.Protocol {
 	case "ssh":
 		args = append(args, "--direct-ssh", host.Name)
+		// 如果主机配置了密码，则传递密码参数
+		if host.Password != "" {
+			args = append(args, "--password", host.Password)
+		}
 	case "rdp":
 		args = append(args, "--direct-rdp", host.Name)
 	default:
@@ -318,12 +326,39 @@ func (a *App) Init() tea.Cmd {
 	// 初始状态检查
 	a.checkHostStatus()
 
-	// 返回定时状态检查命令
-	return a.statusCheckCmd()
+	// 首先获取终端尺寸
+	return tea.Sequence(
+		tea.WindowSize(), // 获取终端尺寸命令
+		a.statusCheckCmd(), // 状态检查命令
+	)
 }
 
 // Update 处理消息和更新状态
 func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// 如果显示密码输入对话框，先让对话框处理消息
+	if a.showPasswordDialog && a.passwordDialog != nil {
+		updated, cmd := a.passwordDialog.Update(msg)
+		a.passwordDialog = updated
+
+		// 检查对话框是否需要关闭
+		if a.passwordDialog.IsClosed() {
+			// 如果用户提交了密码，则执行连接
+			if a.passwordDialog.IsSubmitted() {
+				host := a.passwordDialog.Host()
+				// 设置密码
+				host.Password = a.passwordDialog.GetPassword()
+				// 执行连接
+				a.executeConnection(host)
+			}
+			// 关闭对话框
+			a.showPasswordDialog = false
+			a.passwordDialog = nil
+			a.connecting = false // 重置连接标志
+		}
+
+		return a, cmd
+	}
+
 	// 如果显示新建连接对话框，先让对话框处理消息
 	if a.showNewConnectionDialog && a.newConnectionDialog != nil {
 		updated, cmd := a.newConnectionDialog.Update(msg)
@@ -468,7 +503,16 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if len(a.filteredHosts) > 0 && a.selected < len(a.filteredHosts) && !a.connecting {
 				host := a.filteredHosts[a.selected]
 				a.connecting = true // 设置连接标志，防止重复触发
-				a.executeConnection(host)
+
+				// 检查是否是SSH协议且没有配置密码或密钥
+				if host.Protocol == "ssh" && host.Password == "" && host.KeyPath == "" {
+					// 显示密码输入对话框
+					a.showPasswordDialog = true
+					a.passwordDialog = dialogs.NewPasswordDialog(host, a.width, a.height)
+				} else {
+					// 直接执行连接
+					a.executeConnection(host)
+				}
 			}
 			return a, nil
 
@@ -563,6 +607,13 @@ func (a *App) View() string {
 
 	if a.quitting {
 		return "再见！\n"
+	}
+
+	// 如果显示密码输入对话框
+	if a.showPasswordDialog && a.passwordDialog != nil {
+		var dialogView string
+		dialogView += a.passwordDialog.View()
+		return dialogView
 	}
 
 	// 如果显示新建连接对话框

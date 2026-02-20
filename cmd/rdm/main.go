@@ -23,6 +23,7 @@ var (
 	directSSH   string // 直接SSH连接的主机名
 	directRDP   string // 直接RDP连接的主机名
 	returnToRDM bool   // 连接结束后是否返回RDM界面
+	password    string // SSH密码参数
 
 	// 全局日志器
 	logger *zap.Logger
@@ -46,6 +47,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVarP(&directSSH, "direct-ssh", "", "", "直接连接到指定名称的SSH主机（不启动TUI）")
 	rootCmd.PersistentFlags().StringVarP(&directRDP, "direct-rdp", "", "", "直接连接到指定名称的RDP主机（不启动TUI）")
 	rootCmd.PersistentFlags().BoolVarP(&returnToRDM, "return-to-rdm", "", false, "连接结束后返回RDM界面")
+	rootCmd.PersistentFlags().StringVarP(&password, "password", "p", "", "SSH连接密码（不推荐在命令行中使用，建议在TUI中输入）")
 }
 
 // initLogger 初始化日志器
@@ -91,6 +93,11 @@ func initLogger(logLevel string) error {
 func runDirectConnection(host *models.Host, protocolType string) error {
 	switch protocolType {
 	case "ssh":
+		// 如果命令行参数中提供了密码，则使用该密码
+		if password != "" {
+			host.Password = password
+		}
+
 		client := ssh.NewClient(host)
 
 		if err := client.Connect(); err != nil {
