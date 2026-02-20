@@ -5,29 +5,38 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Build and Run Commands
 
 ```bash
-# Build the project
-go build ./cmd/rdm
+# Build the project (binary name: trelay)
+make build
 
 # Run directly
-go run ./cmd/rdm
+make run
 
 # Run with debug logging
-go run ./cmd/rdm --debug
+make run-debug
+
+# Build and install to system
+make install
 
 # Run with specific config file
-go run ./cmd/rdm --config /path/to/config.json
+./trelay --config /path/to/config.json
 
 # Direct SSH connection (bypasses TUI)
-go run ./cmd/rdm --direct-ssh "hostname"
+./trelay --direct-ssh "hostname"
+
+# Direct SSH connection with password (bypasses TUI)
+./trelay --direct-ssh "hostname" --password "password"
 
 # Direct RDP connection (bypasses TUI)
-go run ./cmd/rdm --direct-rdp "hostname"
+./trelay --direct-rdp "hostname"
 
 # Run with lint checking
 go vet ./...
 
-# Install to system
-go install ./cmd/rdm
+# Run tests (no tests exist yet)
+go test ./...
+
+# Clean build artifacts
+make clean
 ```
 
 ## Architecture Overview
@@ -133,8 +142,11 @@ Hosts are organized into groups (plus "未分组" for ungrouped hosts):
 
 | File | Purpose |
 |------|---------|
+| `Makefile` | Build and deployment management |
 | `cmd/rdm/main.go` | CLI entry, handles direct connections |
 | `internal/ui/tui/app.go` | Bubble Tea TUI application |
+| `internal/ui/dialogs/password.go` | SSH password input dialog |
+| `internal/ui/dialogs/new_connection.go` | New connection configuration dialog |
 | `internal/protocol/session.go` | Session interface definition |
 | `internal/protocol/ssh/client.go` | SSH implementation |
 | `internal/protocol/rdp/client.go` | RDP implementation |
@@ -155,7 +167,9 @@ Hosts are organized into groups (plus "未分组" for ungrouped hosts):
 ## Notes
 
 - No test files exist yet (`go test ./...` will find nothing)
-- Passwords stored in plaintext in config file
+- Passwords stored in plaintext in config file (password prompt added for security)
 - `InsecureIgnoreHostKey()` used for SSH - production should validate host keys
 - macOS ioctl constants differ from Linux (see `app.go` constants)
 - Terminal state is restored properly after TUI exit (uses simple newline instead of ANSI sequences)
+- Password prompt dialog implemented for SSH connections without stored passwords
+- All dialogs now use `lipgloss.Place` for perfect horizontal and vertical centering
