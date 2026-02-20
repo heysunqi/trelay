@@ -72,22 +72,19 @@ fmt:
 	gofmt -w $(SRCS)
 
 # 构建跨平台版本
-.PHONY: build-all build-linux build-darwin build-windows
+.PHONY: build-all build-linux build-darwin
 
-build-all: build-linux build-darwin build-windows
+build-all: build-linux build-darwin
 
 build-linux:
 	@echo "正在构建 Linux 版本..."
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINARY)-linux-amd64 $(MAIN)
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINARY)-linux-arm64 $(MAIN)
 
 build-darwin:
 	@echo "正在构建 macOS 版本..."
 	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINARY)-darwin-amd64 $(MAIN)
 	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINARY)-darwin-arm64 $(MAIN)
-
-build-windows:
-	@echo "正在构建 Windows 版本..."
-	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINARY)-windows-amd64.exe $(MAIN)
 
 # 打包分发
 .PHONY: dist
@@ -96,9 +93,9 @@ dist: build-all
 	@echo "正在创建分发包..."
 	mkdir -p dist/
 	cp $(BINARY)-linux-amd64 dist/
+	cp $(BINARY)-linux-arm64 dist/
 	cp $(BINARY)-darwin-amd64 dist/
 	cp $(BINARY)-darwin-arm64 dist/
-	cp $(BINARY)-windows-amd64.exe dist/
 	@echo "分发包已创建在 dist/ 目录中"
 
 # 显示帮助信息
@@ -121,5 +118,4 @@ help:
 	@echo "  make build-all     构建所有平台版本"
 	@echo "  make build-linux   构建 Linux 版本"
 	@echo "  make build-darwin  构建 macOS 版本"
-	@echo "  make build-windows 构建 Windows 版本"
 	@echo "  make dist          打包分发"
