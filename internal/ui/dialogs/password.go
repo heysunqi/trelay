@@ -125,40 +125,13 @@ func (d *PasswordDialog) View() string {
 	// 渲染对话框
 	dialogContent := dialogStyle.Render(content.String())
 
-	// 如果有终端尺寸信息，计算居中显示
+	// 如果有终端尺寸信息，使用lipgloss.Place实现完美居中
 	if d.width > 0 && d.height > 0 {
-		dialogLines := strings.Split(dialogContent, "\n")
-		dialogHeight := len(dialogLines)
-		dialogWidth := 0
-		for _, line := range dialogLines {
-			if len(line) > dialogWidth {
-				dialogWidth = len(line)
-			}
-		}
-
-		// 计算水平居中
-		horizontalPadding := (d.width - dialogWidth) / 2
-		if horizontalPadding < 0 {
-			horizontalPadding = 0
-		}
-		paddingStr := strings.Repeat(" ", horizontalPadding)
-
-		// 计算垂直居中
-		verticalPadding := (d.height - dialogHeight) / 2
-		if verticalPadding < 0 {
-			verticalPadding = 0
-		}
-
-		// 构建居中的对话框
-		var centeredContent strings.Builder
-		centeredContent.WriteString(strings.Repeat("\n", verticalPadding))
-		for _, line := range dialogLines {
-			centeredContent.WriteString(paddingStr)
-			centeredContent.WriteString(line)
-			centeredContent.WriteString("\n")
-		}
-
-		return centeredContent.String()
+		return lipgloss.Place(
+			d.width, d.height,
+			lipgloss.Center, lipgloss.Center,
+			dialogContent,
+		)
 	}
 
 	// 如果没有终端尺寸信息，直接返回原始内容
