@@ -159,7 +159,10 @@ func runDirectConnection(host *models.Host, protocolType string) error {
 // runRoot 运行根命令
 func runRoot(cmd *cobra.Command, args []string) {
 	// 创建配置管理器（先用临时logger加载配置）
-	tempLogger, err := zap.NewDevelopment() // 使用临时logger
+	// 使用生产模式的日志器，默认级别为Error，避免打印不必要的调试信息
+	tempConfig := zap.NewProductionConfig()
+	tempConfig.Level.SetLevel(zapcore.ErrorLevel)
+	tempLogger, err := tempConfig.Build()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "创建临时日志器失败: %v\n", err)
 		os.Exit(1)
