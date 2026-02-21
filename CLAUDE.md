@@ -152,7 +152,7 @@ If no tool is found, the error includes platform-specific install help.
 
 ### Configuration Management
 
-- Default config path: `~/.config/remote-desktop-manager/config.json`
+- Default config path: `~/.config/trelay/config.json`
 - Config auto-created if missing (see `internal/config/config.go:Load()`)
 - Hot reload via `r` key in TUI
 - Host grouping logic in `pkg/models/config.go:GetGroupedHosts()`

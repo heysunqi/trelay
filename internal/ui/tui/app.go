@@ -15,10 +15,10 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"go.uber.org/zap"
 	"golang.org/x/sys/unix"
-	"remote-desktop-manager/internal/config"
-	"remote-desktop-manager/internal/protocol"
-	"remote-desktop-manager/internal/ui/dialogs"
-	"remote-desktop-manager/pkg/models"
+	"trelay/internal/config"
+	"trelay/internal/protocol"
+	"trelay/internal/ui/dialogs"
+	"trelay/pkg/models"
 )
 
 // 终端IOCTL常量（跨平台）

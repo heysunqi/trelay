@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"go.uber.org/zap"
-	"remote-desktop-manager/pkg/models"
+	"trelay/pkg/models"
 )
 
 // ConnectionStatus 连接状态

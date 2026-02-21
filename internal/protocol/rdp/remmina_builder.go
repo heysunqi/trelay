@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
-	"remote-desktop-manager/pkg/models"
+	"trelay/pkg/models"
 )
 
 // RemminaBuilder remmina命令构建器

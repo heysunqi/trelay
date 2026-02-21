@@ -3,7 +3,7 @@ package rdp
 import (
 	"fmt"
 	"os/exec"
-	"remote-desktop-manager/pkg/models"
+	"trelay/pkg/models"
 )
 
 // FreeRDPBuilder freerdp命令构建器

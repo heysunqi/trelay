@@ -9,8 +9,8 @@ import (
 	"time"
 	"unsafe"
 
-	"remote-desktop-manager/internal/protocol"
-	"remote-desktop-manager/pkg/models"
+	"trelay/internal/protocol"
+	"trelay/pkg/models"
 
 	"golang.org/x/crypto/ssh"
 )

@@ -3,7 +3,7 @@ package rdp
 import (
 	"fmt"
 	"os/exec"
-	"remote-desktop-manager/pkg/models"
+	"trelay/pkg/models"
 )
 
 // CmdBuilder 命令构建器接口

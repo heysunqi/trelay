@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 
 	"go.uber.org/zap"
-	"remote-desktop-manager/pkg/models"
+	"trelay/pkg/models"
 )
 
 // LoadConfig 从默认路径加载配置
@@ -40,7 +40,7 @@ func GetDefaultConfigPath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(homeDir, ".config", "remote-desktop-manager", "config.json"), nil
+	return filepath.Join(homeDir, ".config", "trelay", "config.json"), nil
 }
 
 // CreateDefaultConfig 创建默认配置文件

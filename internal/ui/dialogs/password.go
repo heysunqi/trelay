@@ -6,7 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"remote-desktop-manager/pkg/models"
+	"trelay/pkg/models"
 )
 
 // PasswordDialog 密码输入对话框

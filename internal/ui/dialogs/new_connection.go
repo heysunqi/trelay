@@ -7,7 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"remote-desktop-manager/pkg/models"
+	"trelay/pkg/models"
 )
 
 // NewConnectionDialog 新建连接配置对话框

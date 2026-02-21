@@ -8,7 +8,7 @@ import (
 	"github.com/spf13/viper"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
-	"remote-desktop-manager/pkg/models"
+	"trelay/pkg/models"
 )
 
 // Manager 配置管理器接口
@@ -127,10 +127,10 @@ func (cm *ConfigManager) GetConfigPath() string {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		// 如果无法获取用户目录，使用当前目录
-		return "remote-desktop-manager.json"
+		return "trelay.json"
 	}
 
-	return filepath.Join(homeDir, ".config", "remote-desktop-manager", "config.json")
+	return filepath.Join(homeDir, ".config", "trelay", "config.json")
 }
 
 // SetConfigPath 设置配置文件路径

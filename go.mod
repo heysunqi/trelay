@@ -1,4 +1,4 @@
-module remote-desktop-manager
+module trelay
 
 go 1.25.0
 

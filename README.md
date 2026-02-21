@@ -53,7 +53,7 @@
 
 ## 📁 代码目录结构
 ```
-remote-desktop-manager/
+trelay/
 ├── cmd/                           # 命令行入口
 │   └── rdm/
 │       └── main.go               # 程序主入口
@@ -98,7 +98,7 @@ remote-desktop-manager/
 ```bash
 # 克隆项目（如果适用）
 # git clone <repository-url>
-# cd remote-desktop-manager
+# cd trelay
 
 # 下载依赖
 go mod download
@@ -185,7 +185,7 @@ rdm --help
 ### 命令行参数详细说明
 ```
 Flags:
-  -c, --config string       配置文件路径（默认：~/.config/remote-desktop-manager/config.json）
+  -c, --config string       配置文件路径（默认：~/.config/trelay/config.json）
   -d, --debug               启用调试模式（输出详细日志）
       --direct-ssh string   直接连接到指定名称的SSH主机（不启动TUI）
       --direct-rdp string   直接连接到指定名称的RDP主机（不启动TUI）
@@ -294,7 +294,7 @@ SSH协议支持两种认证方式：
 ## ⚙️ 配置文件
 
 ### 配置文件位置
-默认配置文件路径：`~/.config/remote-desktop-manager/config.json`
+默认配置文件路径：`~/.config/trelay/config.json`
 
 ### 日志级别配置
 程序支持多级别日志输出，通过 `log_level` 字段控制：
