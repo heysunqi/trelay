@@ -9,9 +9,10 @@ import (
 	"time"
 	"unsafe"
 
-	"golang.org/x/crypto/ssh"
 	"remote-desktop-manager/internal/protocol"
 	"remote-desktop-manager/pkg/models"
+
+	"golang.org/x/crypto/ssh"
 )
 
 // winsize 终端窗口大小
@@ -237,10 +238,8 @@ func (c *Client) parsePrivateKey(keyData, keyPassword string) (ssh.Signer, error
 			return nil, fmt.Errorf("读取私钥文件失败: %w", err)
 		}
 	} else {
-		// 是私钥内容
-		keyBytes = []byte(keyData)
+		return nil, fmt.Errorf("读取私钥文件失败: %w", err)
 	}
-
 	// 尝试无密码解析
 	key, err := ssh.ParsePrivateKey(keyBytes)
 	if err == nil {
