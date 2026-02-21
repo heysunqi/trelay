@@ -24,8 +24,8 @@ make uninstall
 make clean
 
 # Build cross-platform binaries
-make build-all     # Linux, macOS (amd64/arm64), Windows
-make build-linux   # Linux amd64
+make build-all     # Linux, macOS (amd64/arm64)
+make build-linux   # Linux amd64 and arm64
 make build-darwin  # macOS amd64 and arm64
 make build-windows # Windows amd64
 
@@ -97,7 +97,7 @@ type Session interface {
 ```
 
 - `internal/protocol/ssh/client.go` - Uses `golang.org/x/crypto/ssh` library
-- `internal/protocol/rdp/client.go` - Spawns external tools (Remmina/FreeRDP via exec.Cmd)
+- `internal/protocol/rdp/client.go` - Spawns external tools (Remmina/FreeRDP) via exec.Cmd
 
 ### Connection Flow
 
@@ -107,8 +107,22 @@ The TUI does not maintain connections directly. Instead, it uses `syscall.Exec` 
 2. TUI spawns new process with `--direct-ssh` or `--direct-rdp` flag
 3. `cmd/rdm/main.go:runDirectConnection()` handles the connection
 4. After disconnect, `--return-to-rdm` flag causes process restart to return to TUI
+5. **`restoreTerminal()`** is called after SSH/RDP session ends to fix terminal state
 
 This avoids conflicts between Bubble Tea event loop and terminal control during SSH/RDP sessions.
+
+### Terminal State Restoration (CRITICAL for SSH sessions)
+
+SSH sessions change terminal settings (raw mode, hidden cursor, etc.). After SSH exits:
+
+- `cmd/rdm/main.go:restoreTerminal()` is called
+- Uses `stty sane` command to reset terminal to default state
+- Sends ANSI escape sequences as fallback: `\033[?1049l` (exit alt screen), `\033[?25h` (show cursor), `\033[0m` (reset attributes)
+- Called in two places:
+  1. After direct SSH/RDP connection ends (before returning to TUI)
+  2. After TUI exits (before program termination)
+
+If you encounter terminal corruption after SSH sessions, this function needs fixing.
 
 ### RDP Tool Detection (internal/protocol/rdp/)
 
@@ -147,7 +161,7 @@ If no tool is found, the error includes platform-specific install help.
 
 Hosts are organized into groups (plus "未分组" for ungrouped hosts):
 - Groups defined in config contain lists of host names
-- `GetGroupedHosts()` resolves names to host objects
+- `GetGroupedHosts()` resolves names: to host objects
 - Tab key switches between groups in TUI
 
 ## Important File Locations
@@ -155,8 +169,8 @@ Hosts are organized into groups (plus "未分组" for ungrouped hosts):
 | File | Purpose |
 |------|---------|
 | `Makefile` | Build and deployment management |
-| `cmd/rdm/main.go` | CLI entry, handles direct connections |
-| `internal/ui/tui/app.go` | Bubble Tea TUI application |
+| `cmd/rdm/main.go` | CLI entry, handles direct connections, terminal restoration |
+| `internal/ui/tui/app.go` | Bubble Tea TUI application (no alt screen mode) |
 | `internal/ui/dialogs/password.go` | SSH password input dialog |
 | `internal/ui/dialogs/new_connection.go` | New connection configuration dialog |
 | `internal/protocol/session.go` | Session interface definition |
@@ -182,7 +196,6 @@ Hosts are organized into groups (plus "未分组" for ungrouped hosts):
 - Passwords stored in plaintext in config file (password prompt added for security)
 - `InsecureIgnoreHostKey()` used for SSH - production should validate host keys
 - macOS ioctl constants differ from Linux (see `app.go` constants)
-- Terminal state is restored properly after TUI exit (sends ANSI escape sequences to restore terminal settings)
-- TUI exit sends escape sequences to restore terminal state: exit alt screen, disable mouse tracking
-- Password prompt dialog implemented for SSH connections without stored passwords
-- All dialogs now use `lipgloss.Place` for perfect horizontal and vertical centering
+- **TUI does NOT use alt screen mode** (see `app.go:Run()`) - this helps with terminal state issues
+- Terminal state restoration uses `stty sane` command - most reliable way to fix terminal after SSH sessions
+- All dialogs use `lipgloss.Place` for perfect horizontal and vertical centering

@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 	"syscall"
 
@@ -242,6 +243,9 @@ func runRoot(cmd *cobra.Command, args []string) {
 			os.Exit(1)
 		}
 
+		// SSH会话结束后，恢复终端状态
+		restoreTerminal()
+
 		// 如果需要返回RDM界面，重新启动程序
 		if returnToRDM {
 			fmt.Println("\n正在返回RDM界面...")
@@ -285,12 +289,25 @@ func runRoot(cmd *cobra.Command, args []string) {
 	}
 
 	// TUI退出后恢复终端状态，确保终端输出格式正常
-	// 发送恢复序列到标准输出
-	fmt.Print("\033[?1049l") // 退出备用屏幕（如果还在备用屏幕中）
-	fmt.Print("\033[?1000l") // 禁用鼠标追踪
-	fmt.Print("\033[?1006l") // 禁用SGR鼠标追踪
-	fmt.Print("\033[?1015l") // 禁用URXVT鼠标追踪
-	fmt.Print("\r\n")        // 换行确保新行
+	restoreTerminal()
+}
+
+// restoreTerminal 恢复终端状态到正常模式
+// 使用 stty sane 命令重置终端设置（最可靠的方式）
+func restoreTerminal() {
+	// 使用 stty sane 命令恢复终端到正常状态
+	// stty sane 会重置所有终端属性到合理的默认值
+	cmd := exec.Command("stty", "sane")
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Run() // 忽略错误，有些终端可能不支持所有选项
+
+	// 额外的ANSI恢复序列
+	fmt.Fprint(os.Stderr, "\033[?1049l") // 退出备用屏幕
+	fmt.Fprint(os.Stderr, "\033[?25h")   // 显示光标
+	fmt.Fprint(os.Stderr, "\033[0m")     // 重置所有终端属性
+	os.Stderr.Sync()
 }
 
 // main 程序入口
