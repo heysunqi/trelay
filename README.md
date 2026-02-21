@@ -19,7 +19,7 @@
   - macOS: 使用 freerdp (需要 X11 支持，如 XQuartz)
   - 支持动态分辨率调整（远程桌面随窗口大小自动适配）
   - 提供详细的错误提示和解决方案
-- **智能返回**：SSH/RDP连接结束后自动返回RDM界面
+- **智能返回**：SSH/RDP连接结束后自动返回trelay界面
 - **新增连接配置**：按下N或n键，显示交互式对话框，支持配置服务器名称、IP地址、用户名、连接协议、认证方式和分组
 - **密码弹窗功能**：当连接未配置密码的SSH主机时，会显示密码输入弹窗，提高安全性
 - **交互式表单**：
@@ -55,7 +55,7 @@
 ```
 trelay/
 ├── cmd/                           # 命令行入口
-│   └── rdm/
+│   └── trelay/
 │       └── main.go               # 程序主入口
 ├── internal/                      # 内部包（不对外暴露）
 │   ├── config/                   # 配置管理
@@ -104,16 +104,16 @@ trelay/
 go mod download
 
 # 构建项目
-go build ./cmd/rdm
+go build ./cmd/trelay
 
 # 或直接运行
-go run ./cmd/rdm
+go run ./cmd/trelay
 ```
 
 ### 安装到系统
 ```bash
 # 安装到 $GOPATH/bin 或 $GOBIN
-go install ./cmd/rdm
+go install ./cmd/trelay
 
 # 确保安装目录在PATH中
 export PATH=$PATH:$(go env GOPATH)/bin
@@ -124,29 +124,29 @@ export PATH=$PATH:$(go env GOPATH)/bin
 ### 启动程序
 ```bash
 # 使用默认配置
-rdm
+trelay
 
 # 指定配置文件
-rdm --config /path/to/config.json
+trelay --config /path/to/config.json
 
 # 启用调试模式（输出所有日志）
-rdm --debug
+trelay --debug
 ```
 
 ### 命令行参数
 ```bash
 # 直接SSH连接（不启动TUI）
-rdm --direct-ssh "主机名称"
+trelay --direct-ssh "主机名称"
 
 # 直接RDP连接（不启动TUI）
-rdm --direct-rdp "主机名称"
+trelay --direct-rdp "主机名称"
 
-# 直接连接后自动返回RDM界面（内部使用）
-rdm --direct-ssh "主机名称" --return-to-rdm
-rdm --direct-rdp "主机名称" --return-to-rdm
+# 直接连接后自动返回trelay界面（内部使用）
+trelay --direct-ssh "主机名称" --return-to-trelay
+trelay --direct-rdp "主机名称" --return-to-trelay
 
 # 查看帮助
-rdm --help
+trelay --help
 ```
 
 ### 界面操作
@@ -189,7 +189,7 @@ Flags:
   -d, --debug               启用调试模式（输出详细日志）
       --direct-ssh string   直接连接到指定名称的SSH主机（不启动TUI）
       --direct-rdp string   直接连接到指定名称的RDP主机（不启动TUI）
-      --return-to-rdm       连接结束后返回RDM界面（内部使用）
+      --return-to-trelay       连接结束后返回trelay界面（内部使用）
   -p, --password string     SSH连接密码（不推荐在命令行中使用，建议在TUI中输入）
   -h, --help                查看帮助信息
 ```

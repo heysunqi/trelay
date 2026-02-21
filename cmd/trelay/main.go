@@ -20,12 +20,12 @@ import (
 
 var (
 	// 命令行参数
-	configPath  string
-	debugMode   bool
-	directSSH   string // 直接SSH连接的主机名
-	directRDP   string // 直接RDP连接的主机名
-	returnToRDM bool   // 连接结束后是否返回RDM界面
-	password    string // SSH密码参数
+	configPath     string
+	debugMode      bool
+	directSSH      string // 直接SSH连接的主机名
+	directRDP      string // 直接RDP连接的主机名
+	returnTotrelay bool   // 连接结束后是否返回trelay界面
+	password       string // SSH密码参数
 
 	// 全局日志器
 	logger *zap.Logger
@@ -33,9 +33,9 @@ var (
 
 // rootCmd 根命令
 var rootCmd = &cobra.Command{
-	Use:   "rdm",
+	Use:   "trelay",
 	Short: "远程桌面管理器 - 复古命令行界面",
-	Long: `远程桌面管理器 (RDM)
+	Long: `远程桌面管理器 (trelay)
 
 一个复古命令行界面的远程桌面管理工具。
 支持 SSH、RDP、VNC 协议，使用 JSON 配置文件管理主机。`,
@@ -48,7 +48,7 @@ func init() {
 	rootCmd.PersistentFlags().BoolVarP(&debugMode, "debug", "d", false, "启用调试模式")
 	rootCmd.PersistentFlags().StringVarP(&directSSH, "direct-ssh", "", "", "直接连接到指定名称的SSH主机（不启动TUI）")
 	rootCmd.PersistentFlags().StringVarP(&directRDP, "direct-rdp", "", "", "直接连接到指定名称的RDP主机（不启动TUI）")
-	rootCmd.PersistentFlags().BoolVarP(&returnToRDM, "return-to-rdm", "", false, "连接结束后返回RDM界面")
+	rootCmd.PersistentFlags().BoolVarP(&returnTotrelay, "return-to-trelay", "", false, "连接结束后返回trelay界面")
 	rootCmd.PersistentFlags().StringVarP(&password, "password", "p", "", "SSH连接密码（不推荐在命令行中使用，建议在TUI中输入）")
 }
 
@@ -247,10 +247,10 @@ func runRoot(cmd *cobra.Command, args []string) {
 		// SSH会话结束后，恢复终端状态
 		restoreTerminal()
 
-		// 如果需要返回RDM界面，重新启动程序
-		if returnToRDM {
-			fmt.Println("\n正在返回RDM界面...")
-			logger.Info("准备返回RDM界面")
+		// 如果需要返回trelay界面，重新启动程序
+		if returnTotrelay {
+			fmt.Println("\n正在返回trelay界面...")
+			logger.Info("准备返回trelay界面")
 			// 获取当前可执行文件路径
 			execPath, err := os.Executable()
 			if err == nil {
@@ -261,16 +261,16 @@ func runRoot(cmd *cobra.Command, args []string) {
 				if debugMode {
 					args = append(args, "--debug")
 				}
-				// 使用 syscall.Exec 重新启动RDM程序
-				logger.Info("执行syscall.Exec重新启动RDM", zap.Strings("args", args))
+				// 使用 syscall.Exec 重新启动trelay程序
+				logger.Info("执行syscall.Exec重新启动trelay", zap.Strings("args", args))
 				err = syscall.Exec(execPath, args, os.Environ())
 				if err != nil {
 					logger.Error("syscall.Exec失败", zap.Error(err))
-					fmt.Fprintf(os.Stderr, "返回RDM界面失败: %v\n", err)
+					fmt.Fprintf(os.Stderr, "返回trelay界面失败: %v\n", err)
 				}
 			} else {
 				logger.Error("获取可执行文件路径失败", zap.Error(err))
-				fmt.Fprintf(os.Stderr, "无法返回RDM界面: %v\n", err)
+				fmt.Fprintf(os.Stderr, "无法返回trelay界面: %v\n", err)
 			}
 		}
 

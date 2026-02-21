@@ -11,14 +11,15 @@ import (
 	"time"
 	"unicode"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
-	"go.uber.org/zap"
-	"golang.org/x/sys/unix"
 	"trelay/internal/config"
 	"trelay/internal/protocol"
 	"trelay/internal/ui/dialogs"
 	"trelay/pkg/models"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"go.uber.org/zap"
+	"golang.org/x/sys/unix"
 )
 
 // 终端IOCTL常量（跨平台）
@@ -72,11 +73,11 @@ type App struct {
 	connecting  bool // 是否正在连接，防止重复触发
 
 	// 新建连接对话框相关字段
-	showNewConnectionDialog bool            // 是否显示新建连接对话框
+	showNewConnectionDialog bool                         // 是否显示新建连接对话框
 	newConnectionDialog     *dialogs.NewConnectionDialog // 新建连接对话框实例
 
 	// 密码输入对话框相关字段
-	showPasswordDialog bool            // 是否显示密码输入对话框
+	showPasswordDialog bool                    // 是否显示密码输入对话框
 	passwordDialog     *dialogs.PasswordDialog // 密码输入对话框实例
 }
 
@@ -247,7 +248,7 @@ func (a *App) executeConnection(host *models.Host) {
 		return
 	}
 
-	args = append(args, "--return-to-rdm")
+	args = append(args, "--return-to-trelay")
 
 	// 使用 syscall.Exec 直接替换当前进程运行直接连接
 	// 这样可以完全控制终端，避免与Bubble Tea事件循环的冲突
@@ -328,7 +329,7 @@ func (a *App) Init() tea.Cmd {
 
 	// 首先获取终端尺寸
 	return tea.Sequence(
-		tea.WindowSize(), // 获取终端尺寸命令
+		tea.WindowSize(),   // 获取终端尺寸命令
 		a.statusCheckCmd(), // 状态检查命令
 	)
 }

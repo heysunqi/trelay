@@ -56,7 +56,7 @@ make fmt
 The application uses a protocol-agnostic design pattern:
 
 ```
-cmd/rdm/main.go (CLI entry point)
+cmd/trelay/main.go (CLI entry point)
     ├── Loads config via internal/config/
     ├── Handles direct connections (--direct-ssh, --direct-rdp)
     └── Spawns TUI via internal/ui/tui/
@@ -105,8 +105,8 @@ The TUI does not maintain connections directly. Instead, it uses `syscall.Exec` 
 
 1. User selects host in TUI → `internal/ui/tui/app.go:executeConnection()`
 2. TUI spawns new process with `--direct-ssh` or `--direct-rdp` flag
-3. `cmd/rdm/main.go:runDirectConnection()` handles the connection
-4. After disconnect, `--return-to-rdm` flag causes process restart to return to TUI
+3. `cmd/trelay/main.go:runDirectConnection()` handles the connection
+4. After disconnect, `--return-to-trelay` flag causes process restart to return to TUI
 5. **`restoreTerminal()`** is called after SSH/RDP session ends to fix terminal state
 
 This avoids conflicts between Bubble Tea event loop and terminal control during SSH/RDP sessions.
@@ -115,7 +115,7 @@ This avoids conflicts between Bubble Tea event loop and terminal control during 
 
 SSH sessions change terminal settings (raw mode, hidden cursor, etc.). After SSH exits:
 
-- `cmd/rdm/main.go:restoreTerminal()` is called
+- `cmd/trelay/main.go:restoreTerminal()` is called
 - Uses `stty sane` command to reset terminal to default state
 - Sends ANSI escape sequences as fallback: `\033[?1049l` (exit alt screen), `\033[?25h` (show cursor), `\033[0m` (reset attributes)
 - Called in two places:
@@ -169,7 +169,7 @@ Hosts are organized into groups (plus "未分组" for ungrouped hosts):
 | File | Purpose |
 |------|---------|
 | `Makefile` | Build and deployment management |
-| `cmd/rdm/main.go` | CLI entry, handles direct connections, terminal restoration |
+| `cmd/trelay/main.go` | CLI entry, handles direct connections, terminal restoration |
 | `internal/ui/tui/app.go` | Bubble Tea TUI application (no alt screen mode) |
 | `internal/ui/dialogs/password.go` | SSH password input dialog |
 | `internal/ui/dialogs/new_connection.go` | New connection configuration dialog |
@@ -186,7 +186,7 @@ Hosts are organized into groups (plus "未分组" for ungrouped hosts):
 1. Create `internal/protocol/<protocol>/client.go` implementing `Session` interface
 2. Add protocol-specific fields to `pkg/models/host.go`
 3. Update `pkg/models/host.go:DefaultPort()` and `Validate()`
-4. Add protocol handling in `cmd/rdm/main.go:runDirectConnection()`
+4. Add protocol handling in `cmd/trelay/main.go:runDirectConnection()`
 5. Update `internal/ui/tui/app.go:executeConnection()` for TUI
 6. Update `internal/ui/tui/app.go:renderHostItem()` for protocol display
 
