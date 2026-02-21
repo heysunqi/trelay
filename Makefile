@@ -9,7 +9,7 @@ BINARY := trelay
 
 # Go源文件
 SRCS := $(shell find . -name "*.go" -type f)
-MAIN := ./cmd/rdm/main.go
+MAIN := ./cmd/trelay/main.go
 
 # 编译标志
 GOFLAGS := -v
