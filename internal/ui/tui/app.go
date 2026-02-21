@@ -1072,10 +1072,9 @@ func Run(logger *zap.Logger) error {
 	}
 
 	// 创建Bubble Tea程序
-	// 禁用鼠标跟踪，以防止干扰SSH会话中的终端功能（如鼠标选中）
+	// 不使用备用屏幕，避免退出时终端状态混乱
 	p := tea.NewProgram(
 		app,
-		tea.WithAltScreen(), // 使用备用屏幕
 	)
 
 	// 运行程序
