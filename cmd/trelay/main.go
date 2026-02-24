@@ -100,6 +100,10 @@ func runDirectConnection(host *models.Host, protocolType string) error {
 			host.Password = password
 		}
 
+		// 在启动SSH连接前，确保光标显示
+		// TUI可能遗留了隐藏光标的状态
+		fmt.Print("\033[?25h")
+
 		client := ssh.NewClient(host)
 
 		if err := client.Connect(); err != nil {
