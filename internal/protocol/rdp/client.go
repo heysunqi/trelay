@@ -10,8 +10,9 @@ import (
 	"syscall"
 	"time"
 
-	"go.uber.org/zap"
 	"trelay/pkg/models"
+
+	"go.uber.org/zap"
 )
 
 // ConnectionStatus 连接状态
@@ -261,7 +262,7 @@ func (c *Client) StartInteractiveSession() error {
 		if exitCode != 0 {
 			if hasError {
 				c.logger.Error("进程异常退出", zap.Int("exit_code", exitCode))
-				return fmt.Errorf(c.formatErrorMessage(stderrStr, exitCode))
+				return errors.New(c.formatErrorMessage(stderrStr, exitCode))
 			}
 			c.logger.Warn("进程非零退出", zap.Int("exit_code", exitCode))
 			return fmt.Errorf("RDP进程退出，代码: %d\n警告输出:\n%s", exitCode, stderrStr)

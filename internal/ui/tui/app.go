@@ -7,6 +7,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	"unicode"
@@ -168,36 +169,58 @@ func (a *App) applySearchFilter() {
 	a.filteredHosts = filtered
 }
 
-// checkHostStatus 检查主机状态
-func (a *App) checkHostStatus() {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+// hostStatusResult 异步状态检查结果
+type hostStatusResult struct {
+	statuses map[string]string // hostName -> "online"/"offline"
+}
 
-	for _, host := range a.hosts {
-		// 跳过本地主机（localhost）的检查
-		if host.Host == "localhost" || host.Host == "127.0.0.1" {
-			host.Status = "online"
-			continue
-		}
-
-		// 使用TCP连接检查端口是否可达
-		address := fmt.Sprintf("%s:%d", host.Host, host.GetPort())
-
-		dialer := &net.Dialer{
-			Timeout: 2 * time.Second,
-		}
-
-		conn, err := dialer.DialContext(ctx, "tcp", address)
-		if err != nil {
-			host.Status = "offline"
-			continue
-		}
-
-		conn.Close()
-		host.Status = "online"
+// checkHostStatusAsync 异步检查主机状态，不阻塞 UI 线程
+func (a *App) checkHostStatusAsync() tea.Cmd {
+	type hostInfo struct {
+		name string
+		host string
+		port int
+	}
+	var hosts []hostInfo
+	for _, h := range a.hosts {
+		hosts = append(hosts, hostInfo{name: h.Name, host: h.Host, port: h.GetPort()})
 	}
 
-	a.lastStatusCheck = time.Now()
+	return func() tea.Msg {
+		statuses := make(map[string]string)
+		var mu sync.Mutex
+		var wg sync.WaitGroup
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+
+		for _, h := range hosts {
+			if h.host == "localhost" || h.host == "127.0.0.1" {
+				mu.Lock()
+				statuses[h.name] = "online"
+				mu.Unlock()
+				continue
+			}
+
+			wg.Add(1)
+			go func(hi hostInfo) {
+				defer wg.Done()
+				address := fmt.Sprintf("%s:%d", hi.host, hi.port)
+				conn, err := (&net.Dialer{Timeout: 2 * time.Second}).DialContext(ctx, "tcp", address)
+				mu.Lock()
+				if err != nil {
+					statuses[hi.name] = "offline"
+				} else {
+					conn.Close()
+					statuses[hi.name] = "online"
+				}
+				mu.Unlock()
+			}(h)
+		}
+
+		wg.Wait()
+		return hostStatusResult{statuses: statuses}
+	}
 }
 
 // statusCheckCmd 状态检查命令
@@ -324,13 +347,11 @@ func (a *App) promptRestart(execPath string) {
 
 // Init 初始化应用程序，返回初始命令
 func (a *App) Init() tea.Cmd {
-	// 初始状态检查
-	a.checkHostStatus()
-
-	// 首先获取终端尺寸
-	return tea.Sequence(
-		tea.WindowSize(),   // 获取终端尺寸命令
-		a.statusCheckCmd(), // 状态检查命令
+	// 首先获取终端尺寸，异步检查主机状态（不阻塞 UI 渲染）
+	return tea.Batch(
+		tea.WindowSize(),          // 获取终端尺寸命令
+		a.checkHostStatusAsync(),  // 异步状态检查
+		a.statusCheckCmd(),        // 定时状态检查
 	)
 }
 
@@ -426,10 +447,21 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case statusCheckMsg:
-		// 定时状态检查
-		a.checkHostStatus()
-		// 继续定时检查
-		return a, a.statusCheckCmd()
+		// 定时状态检查（异步，不阻塞 UI）
+		return a, tea.Batch(
+			a.checkHostStatusAsync(),
+			a.statusCheckCmd(),
+		)
+
+	case hostStatusResult:
+		// 异步状态检查结果返回，更新主机状态
+		for _, host := range a.hosts {
+			if status, ok := msg.statuses[host.Name]; ok {
+				host.Status = status
+			}
+		}
+		a.lastStatusCheck = time.Now()
+		return a, nil
 
 	case tea.KeyMsg:
 		// 搜索模式下的输入处理优先
