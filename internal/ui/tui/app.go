@@ -87,6 +87,10 @@ type App struct {
 	// 错误提示对话框相关字段
 	showErrorDialog bool                 // 是否显示错误提示对话框
 	errorDialog     *dialogs.ErrorDialog // 错误提示对话框实例
+
+	// 新建分组对话框相关字段
+	showNewGroupDialog bool                     // 是否显示新建分组对话框
+	newGroupDialog     *dialogs.NewGroupDialog // 新建分组对话框实例
 }
 
 // NewApp 创建新的应用程序实例
@@ -488,6 +492,55 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, cmd
 	}
 
+	// 如果显示新建分组对话框，先让对话框处理消息
+	if a.showNewGroupDialog && a.newGroupDialog != nil {
+		updated, cmd := a.newGroupDialog.Update(msg)
+		a.newGroupDialog = updated
+
+		// 检查对话框是否需要关闭
+		if a.newGroupDialog.IsClosed() {
+			if a.newGroupDialog.IsConfirmed() {
+				// 创建新分组
+				groupName := strings.TrimSpace(a.newGroupDialog.GetGroupName())
+				if groupName != "" && groupName != "未分组" {
+					// 检查分组是否已存在
+					exists := false
+					for _, g := range a.config.Groups {
+						if g.Name == groupName {
+							exists = true
+							break
+						}
+					}
+
+					if !exists {
+						// 创建新分组
+						newGroup := &models.Group{
+							Name:     groupName,
+							Profiles: []string{},
+						}
+						a.config.Groups = append(a.config.Groups, newGroup)
+
+						// 保存配置
+						if err := a.configMgr.Save(a.config); err != nil {
+							a.logger.Error("保存分组失败", zap.Error(err))
+						} else {
+							a.logger.Info("新建分组已保存", zap.String("name", groupName))
+						}
+
+						// 刷新主机列表
+						a.refreshHosts()
+					}
+				}
+			}
+
+			// 关闭对话框
+			a.showNewGroupDialog = false
+			a.newGroupDialog = nil
+		}
+
+		return a, cmd
+	}
+
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		// 处理窗口大小变化
@@ -629,6 +682,12 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.newConnectionDialog = dialogs.NewNewConnectionDialog(groupNames, a.width, a.height)
 			return a, nil
 
+		case "G", "g":
+			// 显示新建分组对话框
+			a.showNewGroupDialog = true
+			a.newGroupDialog = dialogs.NewNewGroupDialog(a.width, a.height)
+			return a, nil
+
 		case "r":
 			// 刷新配置
 			if cfg, err := a.configMgr.Load(); err == nil {
@@ -704,6 +763,13 @@ func (a *App) View() string {
 	if a.showNewConnectionDialog && a.newConnectionDialog != nil {
 		var dialogView string
 		dialogView += a.newConnectionDialog.View()
+		return dialogView
+	}
+
+	// 新建分组对话框优先显示（即使未初始化完成）
+	if a.showNewGroupDialog && a.newGroupDialog != nil {
+		var dialogView string
+		dialogView += a.newGroupDialog.View()
 		return dialogView
 	}
 
@@ -1150,7 +1216,7 @@ func (a *App) renderHelp() string {
 		Italic(true).
 		Width(a.width - 4).
 		Align(lipgloss.Center)
-	helpText := "键盘: ↑↓ 选择 | Enter 连接 | Tab 分组 | / 搜索 | R 刷新 | N 新建 | Q 退出"
+	helpText := "键盘: ↑↓ 选择 | Enter 连接 | Tab 分组 | / 搜索 | R 刷新 | N 新建 | G 新建分组 | Q 退出"
 
 	return helpStyle.Render(helpText)
 }
