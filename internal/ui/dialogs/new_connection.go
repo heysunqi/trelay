@@ -131,9 +131,13 @@ func (d *NewConnectionDialog) Update(msg tea.Msg) (*NewConnectionDialog, tea.Cmd
 					d.authMethod = "password"
 					d.authIndex = 0
 				}
+				// 确保焦点索引有效
+				d.ensureValidFocusIndex()
 			} else if d.authFocus {
 				d.authMethod = d.authOptions[d.authIndex]
 				d.authFocus = false
+				// 确保焦点索引有效
+				d.ensureValidFocusIndex()
 			} else if d.groupFocus {
 				d.groupInput = d.groupOptions[d.groupIndex]
 				d.groupFocus = false
@@ -193,30 +197,29 @@ func (d *NewConnectionDialog) Update(msg tea.Msg) (*NewConnectionDialog, tea.Cmd
 		// 文本输入操作
 		default:
 			if !d.protocolFocus && !d.authFocus && !d.groupFocus {
-				switch d.fields[d.focusIndex] {
-				case "name":
-					d.nameInput = handleTextInput(d.nameInput, msg)
-				case "ip":
-					d.ipInput = handleTextInput(d.ipInput, msg)
-				case "port":
-					d.portInput = handlePortInput(d.portInput, msg)
-				case "username":
-					d.usernameInput = handleTextInput(d.usernameInput, msg)
-				case "password":
-					d.passwordInput = handlePasswordInput(d.passwordInput, msg)
-				case "keyPath":
-					d.keyPathInput = handleTextInput(d.keyPathInput, msg)
-				case "passphrase":
-					d.passphraseInput = handlePasswordInput(d.passphraseInput, msg)
-				case "description":
-					d.descriptionInput = handleTextInput(d.descriptionInput, msg)
-				case "group":
-					if msg.Runes != nil && len(msg.Runes) > 0 {
-						// 如果在分组字段输入文字，视为创建新分组
-						if d.groupInput == "未分组" {
-							d.groupInput = string(msg.Runes)
-						} else {
-							d.groupInput += string(msg.Runes)
+				visibleFields := d.getVisibleFields()
+				if d.focusIndex < len(visibleFields) {
+					fieldName := visibleFields[d.focusIndex]
+					switch fieldName {
+					case "name":
+						d.nameInput = handleTextInput(d.nameInput, msg)
+					case "ip":
+						d.ipInput = handleTextInput(d.ipInput, msg)
+					case "port":
+						d.portInput = handlePortInput(d.portInput, msg)
+					case "username":
+						d.usernameInput = handleTextInput(d.usernameInput, msg)
+					case "password":
+						d.passwordInput = handlePasswordInput(d.passwordInput, msg)
+					case "keyPath":
+						d.keyPathInput = handleTextInput(d.keyPathInput, msg)
+					case "passphrase":
+						d.passphraseInput = handlePasswordInput(d.passphraseInput, msg)
+					case "description":
+						d.descriptionInput = handleTextInput(d.descriptionInput, msg)
+					case "group":
+						if msg.Type != tea.KeySpace {
+							d.groupInput = handleTextInput(d.groupInput, msg)
 						}
 					}
 				}
@@ -768,6 +771,38 @@ func (d *NewConnectionDialog) navigatePreviousField() {
 
 	// 移动到上一个字段
 	d.focusIndex = (d.focusIndex - 1 + totalVisible) % totalVisible
+}
+
+// 确保焦点索引在有效范围内（当可见字段数量变化时调用）
+func (d *NewConnectionDialog) ensureValidFocusIndex() {
+	fields := []struct {
+		name    string
+		visible bool
+	}{
+		{name: "name", visible: true},
+		{name: "ip", visible: true},
+		{name: "port", visible: true},
+		{name: "username", visible: true},
+		{name: "protocol", visible: true},
+		{name: "authMethod", visible: d.protocol == "ssh"},
+		{name: "password", visible: (d.protocol == "ssh" && d.authMethod == "password") || d.protocol == "rdp" || d.protocol == "vnc"},
+		{name: "keyPath", visible: d.protocol == "ssh" && d.authMethod == "key"},
+		{name: "passphrase", visible: d.protocol == "ssh" && d.authMethod == "key"},
+		{name: "group", visible: true},
+		{name: "description", visible: true},
+	}
+
+	totalVisible := 0
+	for _, field := range fields {
+		if field.visible {
+			totalVisible++
+		}
+	}
+
+	// 如果当前焦点索引超出范围，调整到最后一个字段
+	if d.focusIndex >= totalVisible {
+		d.focusIndex = totalVisible - 1
+	}
 }
 
 // 处理文本输入
