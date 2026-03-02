@@ -31,6 +31,9 @@ var (
 	tcSetTermios = uint(getTCSETS())
 )
 
+// GlobalErrorMessage 全局错误信息（从 main.go 传递到 TUI）
+var GlobalErrorMessage string
+
 func getTCGETS() uintptr {
 	if runtime.GOOS == "darwin" {
 		return 0x404C7413 // TIOCGETA on macOS
@@ -80,6 +83,10 @@ type App struct {
 	// 密码输入对话框相关字段
 	showPasswordDialog bool                    // 是否显示密码输入对话框
 	passwordDialog     *dialogs.PasswordDialog // 密码输入对话框实例
+
+	// 错误提示对话框相关字段
+	showErrorDialog bool                 // 是否显示错误提示对话框
+	errorDialog     *dialogs.ErrorDialog // 错误提示对话框实例
 }
 
 // NewApp 创建新的应用程序实例
@@ -107,6 +114,13 @@ func NewApp(logger *zap.Logger) (*App, error) {
 
 	// 初始化最后状态检查时间
 	app.lastStatusCheck = time.Now()
+
+	// 如果有错误信息，显示错误对话框
+	if GlobalErrorMessage != "" {
+		app.showErrorDialog = true
+		app.errorDialog = dialogs.NewErrorDialog(GlobalErrorMessage, 80, 24) // 初始大小，会在 WindowSizeMsg 中更新
+		GlobalErrorMessage = ""
+	}
 
 	return app, nil
 }
@@ -381,6 +395,44 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, cmd
 	}
 
+	// 如果显示错误对话框，先让对话框处理消息
+	if a.showErrorDialog && a.errorDialog != nil {
+		// 特殊处理 WindowSizeMsg，让主应用也能处理
+		if wMsg, ok := msg.(tea.WindowSizeMsg); ok {
+			// 先让对话框处理窗口大小
+			updated, cmd := a.errorDialog.Update(msg)
+			a.errorDialog = updated
+
+			// 检查对话框是否需要关闭
+			if a.errorDialog.IsClosed() {
+				a.showErrorDialog = false
+				a.errorDialog = nil
+			}
+
+			// 让主应用更新窗口大小
+			a.width = wMsg.Width
+			a.height = wMsg.Height
+			if !a.ready {
+				a.ready = true
+			}
+
+			return a, cmd
+		}
+
+		updated, cmd := a.errorDialog.Update(msg)
+		a.errorDialog = updated
+
+		// 检查对话框是否需要关闭
+		if a.errorDialog.IsClosed() {
+			a.showErrorDialog = false
+			a.errorDialog = nil
+			// 返回 WindowSize 命令以确保 ready 状态被设置
+			return a, tea.Batch(cmd, tea.WindowSize())
+		}
+
+		return a, cmd
+	}
+
 	// 如果显示新建连接对话框，先让对话框处理消息
 	if a.showNewConnectionDialog && a.newConnectionDialog != nil {
 		updated, cmd := a.newConnectionDialog.Update(msg)
@@ -634,26 +686,33 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // View 渲染界面
 func (a *App) View() string {
-	if !a.ready {
-		return "正在初始化..."
+	// 错误对话框优先显示（即使未初始化完成）
+	if a.showErrorDialog && a.errorDialog != nil {
+		var dialogView string
+		dialogView += a.errorDialog.View()
+		return dialogView
 	}
 
-	if a.quitting {
-		return "再见！\n"
-	}
-
-	// 如果显示密码输入对话框
+	// 密码输入对话框优先显示（即使未初始化完成）
 	if a.showPasswordDialog && a.passwordDialog != nil {
 		var dialogView string
 		dialogView += a.passwordDialog.View()
 		return dialogView
 	}
 
-	// 如果显示新建连接对话框
+	// 新建连接对话框优先显示（即使未初始化完成）
 	if a.showNewConnectionDialog && a.newConnectionDialog != nil {
 		var dialogView string
 		dialogView += a.newConnectionDialog.View()
 		return dialogView
+	}
+
+	if !a.ready {
+		return "正在初始化..."
+	}
+
+	if a.quitting {
+		return "再见！\n"
 	}
 
 	var content string
@@ -1116,4 +1175,10 @@ func Run(logger *zap.Logger) error {
 	}
 
 	return nil
+}
+
+// RunWithMessage 带错误信息启动 TUI
+func RunWithMessage(logger *zap.Logger, errorMessage string) error {
+	GlobalErrorMessage = errorMessage
+	return Run(logger)
 }

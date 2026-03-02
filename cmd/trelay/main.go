@@ -147,10 +147,9 @@ func runDirectConnection(host *models.Host, protocolType string) error {
 			logger.Error("RDP会话错误",
 				zap.String("host", host.Name),
 				zap.Error(err))
-			fmt.Printf("\nRDP会话错误: %v\n", err)
-		} else {
-			logger.Info("RDP会话正常结束")
+			return fmt.Errorf("RDP会话错误: %w", err)
 		}
+		logger.Info("RDP会话正常结束")
 
 		client.Disconnect()
 		fmt.Printf("\n已断开与 %s 的连接\n", host.Name)
@@ -244,8 +243,22 @@ func runRoot(cmd *cobra.Command, args []string) {
 		if err := runDirectConnection(targetHost, protocolType); err != nil {
 			logger.Error(fmt.Sprintf("%s连接失败", strings.ToUpper(protocolType)),
 				zap.String("host", directHost), zap.Error(err))
-			fmt.Fprintf(os.Stderr, "%s\n", err)
-			os.Exit(1)
+
+			// 恢复终端状态
+			restoreTerminal()
+
+			// 如果需要返回trelay界面，显示错误弹窗
+			if returnTotrelay {
+				if runErr := runTUIWithError(logger, err.Error()); runErr != nil {
+					fmt.Fprintf(os.Stderr, "启动TUI失败: %v\n", runErr)
+					os.Exit(1)
+				}
+				// TUI 退出后，正常退出
+				os.Exit(0)
+			} else {
+				fmt.Fprintf(os.Stderr, "%s\n", err)
+				os.Exit(1)
+			}
 		}
 
 		// SSH会话结束后，恢复终端状态
@@ -313,6 +326,22 @@ func restoreTerminal() {
 	fmt.Fprint(os.Stderr, "\033[?25h")   // 显示光标
 	fmt.Fprint(os.Stderr, "\033[0m")     // 重置所有终端属性
 	os.Stderr.Sync()
+}
+
+// runTUIWithError 启动TUI显示错误信息
+func runTUIWithError(logger *zap.Logger, errorMessage string) error {
+	// 恢复终端状态
+	restoreTerminal()
+	fmt.Println()
+
+	// 启动 TUI 显示错误
+	if err := tui.RunWithMessage(logger, errorMessage); err != nil {
+		return err
+	}
+
+	// TUI 退出后再次恢复终端
+	restoreTerminal()
+	return nil
 }
 
 // main 程序入口
