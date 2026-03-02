@@ -406,28 +406,38 @@ func (d *NewConnectionDialog) renderPasswordField(label, value string, focused b
 func (d *NewConnectionDialog) renderProtocolSelect(label, value string, focused bool) string {
 	var builder strings.Builder
 
+	selectedStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#000000")).
+		Background(lipgloss.Color("#00ff00")).
+		Bold(true)
+
+	cursorStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#000000")).
+		Background(lipgloss.Color("#ffff00")).
+		Bold(true)
+
 	builder.WriteString(label)
 	builder.WriteString(": ")
 
-	// 显示当前选中的协议
-	if d.protocolFocus {
-		builder.WriteString("(")
-	} else if focused {
+	if d.protocolFocus || focused {
 		builder.WriteString("(")
 	} else {
 		builder.WriteString(" ")
 	}
 
 	for i, opt := range d.protocolOptions {
-		var optStr string
-		if d.protocolFocus && i == d.protocolIndex {
-			optStr = fmt.Sprintf("• %s", strings.ToUpper(opt))
+		isSelected := opt == d.protocol
+		isCursor := d.protocolFocus && i == d.protocolIndex
+
+		if isCursor {
+			builder.WriteString(cursorStyle.Render(fmt.Sprintf(" %s ", strings.ToUpper(opt))))
+		} else if isSelected {
+			builder.WriteString(selectedStyle.Render(fmt.Sprintf(" %s ", opt)))
 		} else {
-			optStr = opt
+			builder.WriteString(fmt.Sprintf(" %s ", opt))
 		}
-		builder.WriteString(optStr)
 		if i < len(d.protocolOptions)-1 {
-			builder.WriteString(" | ")
+			builder.WriteString("|")
 		}
 	}
 
@@ -444,28 +454,38 @@ func (d *NewConnectionDialog) renderProtocolSelect(label, value string, focused 
 func (d *NewConnectionDialog) renderAuthSelect(label, value string, focused bool) string {
 	var builder strings.Builder
 
+	selectedStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#000000")).
+		Background(lipgloss.Color("#00ff00")).
+		Bold(true)
+
+	cursorStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#000000")).
+		Background(lipgloss.Color("#ffff00")).
+		Bold(true)
+
 	builder.WriteString(label)
 	builder.WriteString(": ")
 
-	// 显示当前选中的认证方式
-	if d.authFocus {
-		builder.WriteString("(")
-	} else if focused {
+	if d.authFocus || focused {
 		builder.WriteString("(")
 	} else {
 		builder.WriteString(" ")
 	}
 
 	for i, opt := range d.authOptions {
-		var optStr string
-		if d.authFocus && i == d.authIndex {
-			optStr = fmt.Sprintf("• %s", strings.ToUpper(opt))
+		isSelected := opt == d.authMethod
+		isCursor := d.authFocus && i == d.authIndex
+
+		if isCursor {
+			builder.WriteString(cursorStyle.Render(fmt.Sprintf(" %s ", strings.ToUpper(opt))))
+		} else if isSelected {
+			builder.WriteString(selectedStyle.Render(fmt.Sprintf(" %s ", opt)))
 		} else {
-			optStr = opt
+			builder.WriteString(fmt.Sprintf(" %s ", opt))
 		}
-		builder.WriteString(optStr)
 		if i < len(d.authOptions)-1 {
-			builder.WriteString(" | ")
+			builder.WriteString("|")
 		}
 	}
 
@@ -482,28 +502,38 @@ func (d *NewConnectionDialog) renderAuthSelect(label, value string, focused bool
 func (d *NewConnectionDialog) renderGroupSelect(label, value string, focused bool) string {
 	var builder strings.Builder
 
+	selectedStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#000000")).
+		Background(lipgloss.Color("#00ff00")).
+		Bold(true)
+
+	cursorStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#000000")).
+		Background(lipgloss.Color("#ffff00")).
+		Bold(true)
+
 	builder.WriteString(label)
 	builder.WriteString(": ")
 
-	// 显示当前选中的分组
-	if d.groupFocus {
-		builder.WriteString("(")
-	} else if focused {
+	if d.groupFocus || focused {
 		builder.WriteString("(")
 	} else {
 		builder.WriteString(" ")
 	}
 
 	for i, opt := range d.groupOptions {
-		var optStr string
-		if d.groupFocus && i == d.groupIndex {
-			optStr = fmt.Sprintf("• %s", strings.ToUpper(opt))
+		isSelected := opt == d.groupInput
+		isCursor := d.groupFocus && i == d.groupIndex
+
+		if isCursor {
+			builder.WriteString(cursorStyle.Render(fmt.Sprintf(" %s ", strings.ToUpper(opt))))
+		} else if isSelected {
+			builder.WriteString(selectedStyle.Render(fmt.Sprintf(" %s ", opt)))
 		} else {
-			optStr = opt
+			builder.WriteString(fmt.Sprintf(" %s ", opt))
 		}
-		builder.WriteString(optStr)
 		if i < len(d.groupOptions)-1 {
-			builder.WriteString(" | ")
+			builder.WriteString("|")
 		}
 	}
 
