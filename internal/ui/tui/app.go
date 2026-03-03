@@ -91,6 +91,10 @@ type App struct {
 	// 新建分组对话框相关字段
 	showNewGroupDialog bool                     // 是否显示新建分组对话框
 	newGroupDialog     *dialogs.NewGroupDialog // 新建分组对话框实例
+
+	// 编辑连接对话框相关字段
+	showEditDialog bool                        // 是否显示编辑连接对话框
+	editDialog     *dialogs.EditConnectionDialog // 编辑连接对话框实例
 }
 
 // NewApp 创建新的应用程序实例
@@ -185,6 +189,18 @@ func (a *App) applySearchFilter() {
 	}
 
 	a.filteredHosts = filtered
+}
+
+// findHostGroup 查找主机所属分组
+func (a *App) findHostGroup(hostName string) string {
+	for _, group := range a.config.Groups {
+		for _, profileName := range group.Profiles {
+			if profileName == hostName {
+				return group.Name
+			}
+		}
+	}
+	return ""
 }
 
 // hostStatusResult 异步状态检查结果
@@ -541,6 +557,112 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, cmd
 	}
 
+	// 如果显示编辑连接对话框，先让对话框处理消息
+	if a.showEditDialog && a.editDialog != nil {
+		updated, cmd := a.editDialog.Update(msg)
+		a.editDialog = updated
+
+		// 检查对话框是否需要关闭
+		if a.editDialog.IsClosed() {
+			if a.editDialog.IsSaved() {
+				// 获取原始主机名称
+				originalName := a.editDialog.GetOriginalName()
+
+				// 查找并更新配置中的主机
+				for _, h := range a.config.Profiles {
+					if h.Name == originalName {
+						// 更新主机配置
+						a.editDialog.UpdateHostConfig(h)
+						break
+					}
+				}
+
+				// 处理分组变化
+				newGroupName := a.editDialog.GetGroup()
+				oldGroupName := a.findHostGroup(originalName)
+
+				// 如果主机名称改变，需要更新分组中的引用
+				newName := a.editDialog.GetNameInput()
+
+				// 如果分组有变化
+				if newGroupName != oldGroupName {
+					// 从原分组移除
+					if oldGroupName != "" {
+						for _, group := range a.config.Groups {
+							if group.Name == oldGroupName {
+								newProfiles := []string{}
+								for _, hostName := range group.Profiles {
+									if hostName != originalName {
+										newProfiles = append(newProfiles, hostName)
+									}
+								}
+								group.Profiles = newProfiles
+								break
+							}
+						}
+					}
+
+					// 添加到新分组
+					if newGroupName != "" {
+						found := false
+						for _, group := range a.config.Groups {
+							if group.Name == newGroupName {
+								// 使用新名称（如果改变了）
+								hostNameToAdd := originalName
+								if newName != originalName {
+									hostNameToAdd = newName
+								}
+								group.Profiles = append(group.Profiles, hostNameToAdd)
+								found = true
+								break
+							}
+						}
+						if !found {
+							// 创建新分组
+							hostNameToAdd := originalName
+							if newName != originalName {
+								hostNameToAdd = newName
+							}
+							a.config.Groups = append(a.config.Groups, &models.Group{
+								Name:     newGroupName,
+								Profiles: []string{hostNameToAdd},
+							})
+						}
+					}
+				} else if newName != originalName && oldGroupName != "" {
+					// 如果只是名称改变，更新分组中的引用
+					for _, group := range a.config.Groups {
+						if group.Name == oldGroupName {
+							for i, hostName := range group.Profiles {
+								if hostName == originalName {
+									group.Profiles[i] = newName
+									break
+								}
+							}
+							break
+						}
+					}
+				}
+
+				// 保存配置
+				if err := a.configMgr.Save(a.config); err != nil {
+					a.logger.Error("保存配置失败", zap.Error(err))
+				} else {
+					a.logger.Info("主机配置已更新", zap.String("name", newName))
+				}
+
+				// 刷新主机列表
+				a.refreshHosts()
+			}
+
+			// 关闭对话框
+			a.showEditDialog = false
+			a.editDialog = nil
+		}
+
+		return a, cmd
+	}
+
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		// 处理窗口大小变化
@@ -688,6 +810,22 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.newGroupDialog = dialogs.NewNewGroupDialog(a.width, a.height)
 			return a, nil
 
+		case "E", "e":
+			// 显示编辑连接对话框
+			if len(a.filteredHosts) > 0 && a.selected < len(a.filteredHosts) {
+				host := a.filteredHosts[a.selected]
+				// 查找主机所属分组
+				hostGroup := a.findHostGroup(host.Name)
+				// 获取所有分组名称
+				var groupNames []string
+				for _, group := range a.config.Groups {
+					groupNames = append(groupNames, group.Name)
+				}
+				a.showEditDialog = true
+				a.editDialog = dialogs.NewEditConnectionDialog(host, groupNames, hostGroup, a.width, a.height)
+			}
+			return a, nil
+
 		case "r":
 			// 刷新配置
 			if cfg, err := a.configMgr.Load(); err == nil {
@@ -770,6 +908,13 @@ func (a *App) View() string {
 	if a.showNewGroupDialog && a.newGroupDialog != nil {
 		var dialogView string
 		dialogView += a.newGroupDialog.View()
+		return dialogView
+	}
+
+	// 编辑连接对话框优先显示（即使未初始化完成）
+	if a.showEditDialog && a.editDialog != nil {
+		var dialogView string
+		dialogView += a.editDialog.View()
 		return dialogView
 	}
 
@@ -1216,7 +1361,7 @@ func (a *App) renderHelp() string {
 		Italic(true).
 		Width(a.width - 4).
 		Align(lipgloss.Center)
-	helpText := "键盘: ↑↓ 选择 | Enter 连接 | Tab 分组 | / 搜索 | R 刷新 | N 新建 | G 新建分组 | Q 退出"
+	helpText := "键盘: ↑↓ 选择 | Enter 连接 | Tab 分组 | / 搜索 | R 刷新 | N 新建 | E 编辑 | G 新建分组 | Q 退出"
 
 	return helpStyle.Render(helpText)
 }
