@@ -6,20 +6,25 @@
 
 - **复古终端界面**：黑底绿字经典终端风格，支持键盘导航
 - **多协议支持**：
-  - SSH (支持密码) 和密钥认证)
+  - SSH (支持密码和密钥认证)
   - RDP (Windows远程桌面)
   - VNC (虚拟网络控制台)
 - **智能搜索**：按主机名、描述、IP地址实时搜索
-- **状态监控**：3秒自动检测主机) 在线状态
+- **状态监控**：3秒自动检测主机在线状态
 - **分组管理**：按组组织主机，支持分组切换
 - **配置管理**：JSON格式配置文件，支持热重载
-- **直接SSH连接**：支持通过) 命令行参数直接连接到指定SSH主机（不启动TUI）
+- **直接SSH连接**：支持通过命令行参数直接连接到指定SSH主机（不启动TUI）
 - **直接RDP连接**：支持通过命令行参数直接连接到指定RDP主机（不启动TUI）
   - Linux: 优先使用 Remmina (GUI)，fallback 到 freerdp (CLI)
   - macOS: 使用 freerdp (需要 X11 支持，如 XQuartz)
   - 支持动态分辨率调整（远程桌面随窗口大小自动适配）
   - 提供详细的错误提示和解决方案
-- **智能返回**：SSH/RDP连接结束后自动返回trelay界面
+- **直接VNC连接**：支持通过命令行参数直接连接到指定VNC主机（不启动TUI）
+  - Linux: 优先使用 Remmina，fallback 到 TigerVNC
+  - macOS: 使用系统内置屏幕共享应用
+  - 支持只读模式（view_only）
+  - 提供详细的安装帮助和错误提示
+- **智能返回**：SSH/RDP/VNC连接结束后自动返回trelay界面
 - **新增连接配置**：按下N或n键，显示交互式对话框，支持配置服务器名称、IP地址、用户名、连接协议、认证方式和分组
 - **密码弹窗功能**：当连接未配置密码的SSH主机时，会显示密码输入弹窗，提高安全性
 - **连接失败提示**：连接失败时显示错误弹窗，按Enter键返回主界面，方便用户查看详细错误信息
@@ -55,6 +60,7 @@
 - **日志系统**: [Zap](https://go.uber.org/zap) - 高性能日志库，支持多级别输出
 - **SSH协议**: `golang.org/x/crypto/ssh` - Go标准SSH库
 - **RDP协议**: freerdp/remmina (外部工具)
+- **VNC协议**: Remmina/TigerVNC/macOS屏幕共享 (外部工具)
 
 ## 📁 代码目录结构
 ```
@@ -70,15 +76,24 @@ trelay/
 │   │   ├── manager.go           # 连接管理器
 │   │   ├── session.go           # 会话管理
 │   │   ├── ssh/                 # SSH协议实现
-│   │   └── rdp/                 # RDP协议实现
+│   │   ├── rdp/                 # RDP协议实现
+│   │   │   ├── types.go          # 工具类型定义
+│   │   │   ├── selector.go       # 平台特定工具优先级
+│   │   │   ├── detector.go       # 工具检测
+│   │   │   ├── install_helper.go # 安装帮助
+│   │   │   ├── builder.go       # 命令构建器工厂
+│   │   │   ├── remmina_builder.go # Remmina命令构建
+│   │   │   ├── freerdp_builder.go # FreeRDP命令构建
+│   │   │   └── client.go         # RDP客户端
+│   │   └── vnc/                 # VNC协议实现
 │   │       ├── types.go          # 工具类型定义
-│   │       ├── selector.go       # 平台特定工具优先级
 │   │       ├── detector.go       # 工具检测
-│   │       ├── install_helper.go # 安装帮助
-│   │       ├── builder.go       # 命令构建器工厂
+│   │       ├── builder.go        # 命令构建器接口
 │   │       ├── remmina_builder.go # Remmina命令构建
-│   │       └── freerdp_builder.go # FreeRDP命令构建
-│   │       └── client.go         # RDP客户端
+│   │       ├── tigervnc_builder.go # TigerVNC命令构建
+│   │       ├── macos_connector.go # macOS屏幕共享连接
+│   │       ├── install_helper.go  # 安装帮助
+│   │       └── client.go          # VNC客户端
 │   └── ui/                       # 用户界面
 │       └── tui/
 │           └── app.go           # TUI主逻辑
@@ -151,9 +166,13 @@ trelay --direct-ssh "主机名称"
 # 直接RDP连接（不启动TUI）
 trelay --direct-rdp "主机名称"
 
+# 直接VNC连接（不启动TUI）
+trelay --direct-vnc "主机名称"
+
 # 直接连接后自动返回trelay界面（内部使用）
 trelay --direct-ssh "主机名称" --return-to-trelay
 trelay --direct-rdp "主机名称" --return-to-trelay
+trelay --direct-vnc "主机名称" --return-to-trelay
 
 # 查看帮助
 trelay --help
@@ -212,8 +231,9 @@ Flags:
   -d, --debug               启用调试模式（输出详细日志）
       --direct-ssh string   直接连接到指定名称的SSH主机（不启动TUI）
       --direct-rdp string   直接连接到指定名称的RDP主机（不启动TUI）
-      --return-to-trelay       连接结束后返回trelay界面（内部使用）
-  -p, --password string     SSH连接密码（不推荐在命令行中使用，建议在TUI中输入）
+      --direct-vnc string   直接连接到指定名称的VNC主机（不启动TUI）
+      --return-to-trelay    连接结束后返回trelay界面（内部使用）
+  -p, --password string     SSH/VNC连接密码（不推荐在命令行中使用，建议在TUI中输入）
   -h, --help                查看帮助信息
 ```
 
@@ -503,6 +523,23 @@ go test -cover ./...
 - [Cobra](https://github.com/spf13/cobra) - Go命令行框架
 
 ## 📋 更新日志
+
+### 2026-03-05
+
+#### 新增功能
+- **VNC协议支持**：新增VNC远程桌面连接功能
+  - **Linux平台**：优先使用 Remmina，fallback 到 TigerVNC
+  - **macOS平台**：使用系统内置屏幕共享应用（无需安装额外工具）
+  - 支持通过 `--direct-vnc` 命令行参数直接连接
+  - 支持只读模式（view_only）配置
+  - 提供详细的工具检测和安装帮助信息
+  - 支持密码认证
+  - 自动检测可用VNC工具，按优先级选择最优方案
+
+#### 代码变更
+- 新增 `internal/protocol/vnc/` 目录，包含完整的VNC协议实现
+- 更新 `cmd/trelay/main.go`，添加 `--direct-vnc` 参数支持
+- 更新 `internal/ui/tui/app.go`，支持VNC协议连接
 
 ### 2026-03-03
 

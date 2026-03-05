@@ -89,11 +89,11 @@ type App struct {
 	errorDialog     *dialogs.ErrorDialog // 错误提示对话框实例
 
 	// 新建分组对话框相关字段
-	showNewGroupDialog bool                     // 是否显示新建分组对话框
+	showNewGroupDialog bool                    // 是否显示新建分组对话框
 	newGroupDialog     *dialogs.NewGroupDialog // 新建分组对话框实例
 
 	// 编辑连接对话框相关字段
-	showEditDialog bool                        // 是否显示编辑连接对话框
+	showEditDialog bool                          // 是否显示编辑连接对话框
 	editDialog     *dialogs.EditConnectionDialog // 编辑连接对话框实例
 }
 
@@ -299,6 +299,12 @@ func (a *App) executeConnection(host *models.Host) {
 		}
 	case "rdp":
 		args = append(args, "--direct-rdp", host.Name)
+	case "vnc":
+		args = append(args, "--direct-vnc", host.Name)
+		// 如果主机配置了密码，则传递密码参数
+		if host.Password != "" {
+			args = append(args, "--password", host.Password)
+		}
 	default:
 		a.logger.Error("不支持的协议", zap.String("protocol", host.Protocol))
 		fmt.Printf("不支持的协议: %s\n", host.Protocol)
@@ -383,9 +389,9 @@ func (a *App) promptRestart(execPath string) {
 func (a *App) Init() tea.Cmd {
 	// 首先获取终端尺寸，异步检查主机状态（不阻塞 UI 渲染）
 	return tea.Batch(
-		tea.WindowSize(),          // 获取终端尺寸命令
-		a.checkHostStatusAsync(),  // 异步状态检查
-		a.statusCheckCmd(),        // 定时状态检查
+		tea.WindowSize(),         // 获取终端尺寸命令
+		a.checkHostStatusAsync(), // 异步状态检查
+		a.statusCheckCmd(),       // 定时状态检查
 	)
 }
 

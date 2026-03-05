@@ -10,6 +10,7 @@ import (
 	"trelay/internal/config"
 	"trelay/internal/protocol/rdp"
 	"trelay/internal/protocol/ssh"
+	"trelay/internal/protocol/vnc"
 	"trelay/internal/ui/tui"
 	"trelay/pkg/models"
 
@@ -24,8 +25,9 @@ var (
 	debugMode      bool
 	directSSH      string // 直接SSH连接的主机名
 	directRDP      string // 直接RDP连接的主机名
+	directVNC      string // 直接VNC连接的主机名
 	returnTotrelay bool   // 连接结束后是否返回trelay界面
-	password       string // SSH密码参数
+	password       string // SSH/VNC密码参数
 
 	// 全局日志器
 	logger *zap.Logger
@@ -48,8 +50,9 @@ func init() {
 	rootCmd.PersistentFlags().BoolVarP(&debugMode, "debug", "d", false, "启用调试模式")
 	rootCmd.PersistentFlags().StringVarP(&directSSH, "direct-ssh", "", "", "直接连接到指定名称的SSH主机（不启动TUI）")
 	rootCmd.PersistentFlags().StringVarP(&directRDP, "direct-rdp", "", "", "直接连接到指定名称的RDP主机（不启动TUI）")
+	rootCmd.PersistentFlags().StringVarP(&directVNC, "direct-vnc", "", "", "直接连接到指定名称的VNC主机（不启动TUI）")
 	rootCmd.PersistentFlags().BoolVarP(&returnTotrelay, "return-to-trelay", "", false, "连接结束后返回trelay界面")
-	rootCmd.PersistentFlags().StringVarP(&password, "password", "p", "", "SSH连接密码（不推荐在命令行中使用，建议在TUI中输入）")
+	rootCmd.PersistentFlags().StringVarP(&password, "password", "p", "", "SSH/VNC连接密码（不推荐在命令行中使用，建议在TUI中输入）")
 }
 
 // initLogger 初始化日志器
@@ -154,6 +157,50 @@ func runDirectConnection(host *models.Host, protocolType string) error {
 		client.Disconnect()
 		fmt.Printf("\n已断开与 %s 的连接\n", host.Name)
 
+	case "vnc":
+		fmt.Printf("准备连接到 %s (VNC)...\n", host.Name)
+		logger.Info("开始VNC直接连接",
+			zap.String("host", host.Name),
+			zap.String("address", host.Host),
+			zap.Int("port", host.Port))
+
+		// 如果命令行参数中提供了密码，则使用该密码
+		if password != "" {
+			host.Password = password
+		}
+
+		client := vnc.NewClient(host)
+
+		if err := client.Connect(); err != nil {
+			logger.Error("VNC连接失败", zap.Error(err))
+			return err
+		}
+
+		toolName := client.GetToolName()
+		fmt.Printf("正在使用 %s 连接到 %s...\n", toolName, host.Name)
+		logger.Info("VNC连接启动成功",
+			zap.String("host", host.Name),
+			zap.String("tool", toolName))
+
+		// 显示连接提示
+		hint := client.GetConnectionHint()
+		if hint != "" {
+			fmt.Println(hint)
+		}
+
+		// 启动交互式会话
+		logger.Info("进入VNC会话...")
+		if err := client.StartInteractiveSession(); err != nil {
+			logger.Error("VNC会话错误",
+				zap.String("host", host.Name),
+				zap.Error(err))
+			return fmt.Errorf("VNC会话错误: %w", err)
+		}
+		logger.Info("VNC会话正常结束")
+
+		client.Disconnect()
+		fmt.Printf("\n已断开与 %s 的连接\n", host.Name)
+
 	default:
 		return fmt.Errorf("不支持的协议: %s", protocolType)
 	}
@@ -200,8 +247,8 @@ func runRoot(cmd *cobra.Command, args []string) {
 	// 重新创建配置管理器（使用实际的logger）
 	mgr = config.NewConfigManager(logger)
 
-	// 处理直接SSH/RDP连接
-	if directSSH != "" || directRDP != "" {
+	// 处理直接SSH/RDP/VNC连接
+	if directSSH != "" || directRDP != "" || directVNC != "" {
 		// 确定连接类型和主机名
 		var directHost string
 		var protocolType string
@@ -209,9 +256,12 @@ func runRoot(cmd *cobra.Command, args []string) {
 		if directSSH != "" {
 			directHost = directSSH
 			protocolType = "ssh"
-		} else {
+		} else if directRDP != "" {
 			directHost = directRDP
 			protocolType = "rdp"
+		} else {
+			directHost = directVNC
+			protocolType = "vnc"
 		}
 
 		logger.Info(fmt.Sprintf("直接%s连接模式", strings.ToUpper(protocolType)), zap.String("host", directHost))
