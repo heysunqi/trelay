@@ -191,6 +191,20 @@ func (d *NewConnectionDialog) Update(msg tea.Msg) (*NewConnectionDialog, tea.Cmd
 					d.authFocus = true
 				} else if fieldName == "group" {
 					d.groupFocus = true
+				} else {
+					// 非下拉字段，将空格作为普通字符输入
+					switch fieldName {
+					case "name":
+						d.nameInput += " "
+					case "ip":
+						d.ipInput += " "
+					case "username":
+						d.usernameInput += " "
+					case "description":
+						d.descriptionInput += " "
+					case "keyPath":
+						d.keyPathInput += " "
+					}
 				}
 			}
 

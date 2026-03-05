@@ -1035,6 +1035,25 @@ func displayWidth(s string) int {
 	return width
 }
 
+// unescapeDescription 将描述中的转义字符还原为原始字符
+// 处理常见的转义序列：\s -> 空格, \t -> 制表符, \n -> 换行, \\ -> 反斜杠
+func unescapeDescription(s string) string {
+	if s == "" {
+		return s
+	}
+
+	// 使用 strings.NewReplacer 进行批量替换
+	// 顺序很重要：先替换双反斜杠，再替换其他
+	replacer := strings.NewReplacer(
+		"\\n", "\n", // 换行
+		"\\t", "\t", // 制表符
+		"\\s", " ", // 空格（放在最后避免与其他冲突）
+		"\\\\", "\\", // 反斜杠
+	)
+
+	return replacer.Replace(s)
+}
+
 // truncateByDisplayWidth 按显示宽度截断字符串
 func truncateByDisplayWidth(s string, maxWidth int) string {
 	if displayWidth(s) <= maxWidth {
@@ -1064,11 +1083,18 @@ func truncateByDisplayWidth(s string, maxWidth int) string {
 
 // getColumnWidths 计算表格列宽
 func (a *App) getColumnWidths() ([]int, int) {
-	// 列定义：选中(2)、协议(4)、名称(30)、IP(15)、用户名(10)、分组(20)、状态(8)
-	// 最小总宽度：2+4+30+15+10+20+8 = 89字符
-	// 加上列之间的空格：每列之间1个空格，6个分隔符 = 6字符，总共93字符
+	// 检查是否显示描述列
+	showDescription := a.shouldShowDescriptionColumn()
 
-	minWidths := []int{2, 4, 30, 15, 10, 20, 10}
+	// 列定义：选中(2)、协议(4)、名称(30)、IP(15)、用户名(10)、分组(20)、状态(8)、描述(20)
+	// 列定义：选中(2)、协议(4)、名称(20)、IP(15)、用户名(10)、分组(20)、状态(8)、描述(25)
+	// 如果显示描述列，总宽度：2+4+20+15+10+20+8+25 = 104字符
+	// 加上列之间的空格：每列之间1个空格，7个分隔符 = 7字符，总共111字符
+
+	minWidths := []int{2, 4, 20, 15, 10, 20, 10}
+	if showDescription {
+		minWidths = append(minWidths, 25) // 描述列宽度
+	}
 	colSpacing := 1 // 列之间的空格数
 
 	// 如果终端宽度足够，按比例分配额外空间
@@ -1091,21 +1117,53 @@ func (a *App) getColumnWidths() ([]int, int) {
 			}
 		}
 	} else {
-		// 使用最小宽度，多余空间加到名称列
+		// 使用最小宽度，多余空间加到描述列或名称列
 		copy(widths, minWidths)
 		extraWidth := availableWidth - minTotalWidth
-		widths[2] += extraWidth // 名称列获得额外空间
+		if showDescription {
+			widths[len(widths)-1] += extraWidth // 描述列获得额外空间
+		} else {
+			widths[2] += extraWidth // 无描述列时，名称列获得额外空间
+		}
 	}
 
 	return widths, colSpacing
+}
+
+// shouldShowDescriptionColumn 检查是否应该显示描述列
+// 当所有主机的描述长度都小于5个字符时，不显示该列
+func (a *App) shouldShowDescriptionColumn() bool {
+	// 如果没有主机，默认不显示
+	if len(a.filteredHosts) == 0 {
+		return false
+	}
+
+	// 检查是否所有主机都没有描述或描述长度都小于5
+	allShortOrEmpty := true
+	for _, host := range a.filteredHosts {
+		descLen := displayWidth(host.Description)
+		if descLen >= 5 {
+			allShortOrEmpty = false
+			break
+		}
+	}
+
+	// 如果所有描述都小于5个字符，不显示该列
+	return !allShortOrEmpty
 }
 
 // renderTableHeader 渲染表格表头
 func (a *App) renderTableHeader() string {
 	widths, colSpacing := a.getColumnWidths()
 
+	// 检查是否显示描述列
+	showDescription := a.shouldShowDescriptionColumn()
+
 	// 表头文本
 	headers := []string{" ", "协议", "名称", "IP地址", "用户名", "分组", "状态"}
+	if showDescription {
+		headers = append(headers, "描述")
+	}
 
 	// 构建表头行
 	var headerBuilder strings.Builder
@@ -1226,6 +1284,9 @@ func (a *App) renderHostItem(host *models.Host, selected bool) string {
 		groupName = "未分组"
 	}
 
+	// 检查是否显示描述列
+	showDescription := a.shouldShowDescriptionColumn()
+
 	// 构建表格行
 	var rowBuilder strings.Builder
 	columns := []string{
@@ -1238,13 +1299,20 @@ func (a *App) renderHostItem(host *models.Host, selected bool) string {
 		statusText,
 	}
 
+	// 如果显示描述列，添加描述内容
+	if showDescription {
+		// 处理描述中的转义字符
+		unescapedDesc := unescapeDescription(host.Description)
+		columns = append(columns, unescapedDesc)
+	}
+
 	for i, column := range columns {
 		width := widths[i]
 		displayText := column
 
 		// 应用最大长度限制（基于显示宽度）
-		if i == 2 { // 名称列
-			displayText = truncateByDisplayWidth(displayText, 30)
+		if i == 2 { // 名称列，限制为20字符
+			displayText = truncateByDisplayWidth(displayText, 20)
 		} else if i == 5 { // 分组列
 			displayText = truncateByDisplayWidth(displayText, 20)
 		}
@@ -1280,14 +1348,12 @@ func (a *App) renderHostItem(host *models.Host, selected bool) string {
 	// 状态文字单独着色
 	rowText := rowBuilder.String()
 	// 找到状态列的位置并着色
-	// 计算状态列的开始位置（最后一列）
-	statusColIndex := len(columns) - 1 // 状态是最后一列
+	// 状态列固定为 index 6（选中、协议、名称、IP、用户名、分组、状态）
+	statusColIndex := 6
 	statusStartPos := 0
 	for i := 0; i < statusColIndex; i++ {
 		statusStartPos += widths[i]
-		if i < statusColIndex-1 {
-			statusStartPos += colSpacing
-		}
+		statusStartPos += colSpacing
 	}
 	// 状态列的宽度是widths[statusColIndex]
 	statusEndPos := statusStartPos + widths[statusColIndex]
@@ -1297,11 +1363,19 @@ func (a *App) renderHostItem(host *models.Host, selected bool) string {
 		statusCol := rowText[statusStartPos:statusEndPos]
 		afterStatus := rowText[statusEndPos:]
 
+		// 状态列样式
 		statusStyle := lipgloss.NewStyle().
 			Foreground(lipgloss.Color(statusColor)).Bold(true)
-		coloredStatus := statusStyle.Render(statusCol)
+		if selected {
+			statusStyle = statusStyle.Background(lipgloss.Color("#00ff00"))
+			// 选中行时，绿色状态(online/connected)改用深绿色避免绿底绿字不可见
+			if statusColor == "#00ff00" {
+				statusStyle = statusStyle.Foreground(lipgloss.Color("#004400"))
+			}
+		}
 
-		rowText = beforeStatus + coloredStatus + afterStatus
+		// 分段渲染避免 ANSI 重置码破坏后续文本样式
+		return style.Render(beforeStatus) + statusStyle.Render(statusCol) + style.Render(afterStatus)
 	}
 
 	return style.Render(rowText)
