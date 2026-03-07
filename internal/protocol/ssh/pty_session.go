@@ -4,41 +4,36 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
-	"runtime"
 	"sync"
-	"syscall"
 	"time"
-	"unsafe"
 
 	"trelay/internal/protocol"
 	"trelay/pkg/models"
 
-	"github.com/creack/pty"
 	"golang.org/x/crypto/ssh"
 )
 
-// PTYSession 基于PTY的SSH会话，支持前台/后台切换
+// PTYSession 基于SSH会话，支持前台/后台切换
 type PTYSession struct {
-	mu        sync.Mutex
-	host      *models.Host
-	sshClient *ssh.Client
-	session   *ssh.Session
-	ptmx      *os.File       // PTY master 端
-	tty       *os.File       // PTY slave 端（保持打开供SSH session使用）
-	attached  bool           // 是否已附加到终端
-	done      chan struct{}   // SSH session 结束信号
-	cancel    context.CancelFunc
-	status    protocol.ConnectionStatus
-	err       error
-	startTime *time.Time
+	mu         sync.Mutex
+	host       *models.Host
+	sshClient  *ssh.Client
+	session    *ssh.Session
+	stdinPipe  io.WriteCloser
+	stdoutPipe io.Reader
+	stderrPipe io.Reader
+	attached   bool
+	done       chan struct{}
+	status     protocol.ConnectionStatus
+	err        error
+	startTime  *time.Time
 
 	// I/O 转发控制
 	ioCancel context.CancelFunc
 	ioWg     sync.WaitGroup
 }
 
-// NewPTYSession 创建PTY会话
+// NewPTYSession 创建SSH会话
 func NewPTYSession(host *models.Host, sshClient *ssh.Client) *PTYSession {
 	now := time.Now()
 	return &PTYSession{
@@ -147,14 +142,13 @@ func (p *PTYSession) Start() error {
 	return nil
 }
 
-// Attach 将 PTY master 连接到真实终端（前台模式）
+// Attach 将 SSH 会话连接到真实终端（前台模式）
 // 返回时表示用户已 detach 或 session 已结束
-// detachKey: 检测到该字节序列时触发 detach（如 Ctrl+B = 0x02）
 func (p *PTYSession) Attach(stdin io.Reader, stdout io.Writer) error {
 	p.mu.Lock()
-	if p.ptmx == nil {
+	if p.stdinPipe == nil || p.stdoutPipe == nil {
 		p.mu.Unlock()
-		return fmt.Errorf("PTY会话未启动")
+		return fmt.Errorf("SSH会话未启动")
 	}
 	if p.attached {
 		p.mu.Unlock()
@@ -180,11 +174,14 @@ func (p *PTYSession) Attach(stdin io.Reader, stdout io.Writer) error {
 		err error
 	}
 	stdinReadCh := make(chan readResult, 1)
-	ptmxReadCh := make(chan readResult, 1)
+	stdoutReadCh := make(chan readResult, 1)
+	stderrReadCh := make(chan readResult, 1)
 
 	// 启动双向 I/O 转发
-	// stdin → PTY master（用户输入 → SSH）
+	// stdin → SSH stdin（用户输入 → SSH）
+	p.ioWg.Add(1)
 	go func() {
+		defer p.ioWg.Done()
 		buf := make([]byte, 1024)
 		for {
 			select {
@@ -217,7 +214,7 @@ func (p *PTYSession) Attach(stdin io.Reader, stdout io.Writer) error {
 					if buf[i] == 0x02 {
 						// 写入 Ctrl+B 之前的数据
 						if i > 0 {
-							p.ptmx.Write(buf[:i])
+							p.stdinPipe.Write(buf[:i])
 						}
 						// 触发 detach
 						cancel()
@@ -225,15 +222,17 @@ func (p *PTYSession) Attach(stdin io.Reader, stdout io.Writer) error {
 					}
 				}
 
-				if _, err := p.ptmx.Write(buf[:n]); err != nil {
+				if _, err := p.stdinPipe.Write(buf[:n]); err != nil {
 					return
 				}
 			}
 		}
 	}()
 
-	// PTY master → stdout（SSH 输出 → 用户终端）
+	// SSH stdout → stdout（SSH 输出 → 用户终端）
+	p.ioWg.Add(1)
 	go func() {
+		defer p.ioWg.Done()
 		buf := make([]byte, 4096)
 		for {
 			select {
@@ -246,8 +245,8 @@ func (p *PTYSession) Attach(stdin io.Reader, stdout io.Writer) error {
 
 			// 在 goroutine 中执行阻塞读取
 			go func() {
-				n, err := p.ptmx.Read(buf)
-				ptmxReadCh <- readResult{n: n, err: err}
+				n, err := p.stdoutPipe.Read(buf)
+				stdoutReadCh <- readResult{n: n, err: err}
 			}()
 
 			select {
@@ -255,7 +254,43 @@ func (p *PTYSession) Attach(stdin io.Reader, stdout io.Writer) error {
 				return
 			case <-p.done:
 				return
-			case result := <-ptmxReadCh:
+			case result := <-stdoutReadCh:
+				if result.err != nil {
+					return
+				}
+				if _, err := stdout.Write(buf[:result.n]); err != nil {
+					return
+				}
+			}
+		}
+	}()
+
+	// SSH stderr → stdout（SSH 错误输出 → 用户终端）
+	p.ioWg.Add(1)
+	go func() {
+		defer p.ioWg.Done()
+		buf := make([]byte, 4096)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-p.done:
+				return
+			default:
+			}
+
+			// 在 goroutine 中执行阻塞读取
+			go func() {
+				n, err := p.stderrPipe.Read(buf)
+				stderrReadCh <- readResult{n: n, err: err}
+			}()
+
+			select {
+			case <-ctx.Done():
+				return
+			case <-p.done:
+				return
+			case result := <-stderrReadCh:
 				if result.err != nil {
 					return
 				}
@@ -274,9 +309,9 @@ func (p *PTYSession) Attach(stdin io.Reader, stdout io.Writer) error {
 		// SSH session 自然结束
 	}
 
-	// 取消 context 并等待一小段时间让 goroutine 退出
+	// 取消 context 并等待 goroutine 退出
 	cancel()
-	time.Sleep(10 * time.Millisecond)
+	p.ioWg.Wait()
 
 	p.mu.Lock()
 	p.attached = false
@@ -339,22 +374,16 @@ func (p *PTYSession) Disconnect() error {
 		p.ioCancel()
 	}
 
+	// 关闭 stdin 管道
+	if p.stdinPipe != nil {
+		p.stdinPipe.Close()
+		p.stdinPipe = nil
+	}
+
 	// 关闭 SSH session
 	if p.session != nil {
 		p.session.Close()
 		p.session = nil
-	}
-
-	// 关闭 PTY slave
-	if p.tty != nil {
-		p.tty.Close()
-		p.tty = nil
-	}
-
-	// 关闭 PTY master
-	if p.ptmx != nil {
-		p.ptmx.Close()
-		p.ptmx = nil
 	}
 
 	// 关闭 SSH 连接
