@@ -44,6 +44,10 @@ func (e *ExecAdapter) Run() error {
 		return fmt.Errorf("stdin/stdout 未设置")
 	}
 
+	// 清屏并移动光标到左上角（在设置 raw mode 之前）
+	// 这样 SSH shell 首次连接时内容会展示在屏幕最顶端
+	fmt.Print("\033[2J\033[H")
+
 	// 重要：Bubble Tea 的 p.input 可能是 cancelreader，在 ReleaseTerminal 后被取消
 	// 我们需要直接使用 os.Stdin 和 os.Stdout，而不是通过 cancelreader
 	// 因为 cancelreader 被取消后会立即返回错误

@@ -126,10 +126,6 @@ func (p *PTYSession) Start() error {
 		return p.err
 	}
 
-	// 发送清屏命令（Ctrl+L），让远程终端清屏
-	// 这样新连接会从干净的屏幕开始
-	stdinPipe.Write([]byte("\x0c")) // Ctrl+L = 0x0c
-
 	// 在 goroutine 中等待 SSH session 结束
 	go func() {
 		_ = session.Wait()
