@@ -910,6 +910,18 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// 直接连接到选中的主机
 			if len(a.filteredHosts) > 0 && a.selected < len(a.filteredHosts) && !a.connecting {
 				host := a.filteredHosts[a.selected]
+
+				// 检查是否已有后台会话可复用
+				if session, ok := a.connManager.GetSession(host.Name); ok {
+					if ptySession, ok := session.(*sshpkg.PTYSession); ok {
+						if ptySession.IsConnected() && !ptySession.IsAttached() && ptySession.IsAlive() {
+							// 复用已有的后台会话
+							a.connecting = true
+							return a, a.attachSSHSession(ptySession)
+						}
+					}
+				}
+
 				a.connecting = true // 设置连接标志，防止重复触发
 
 				// 检查是否是SSH协议且没有配置密码或密钥
