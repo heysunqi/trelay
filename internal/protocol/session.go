@@ -1,6 +1,8 @@
 package protocol
 
 import (
+	"errors"
+	"io"
 	"time"
 )
 
@@ -13,7 +15,11 @@ const (
 	StatusConnected    ConnectionStatus = "connected"
 	StatusDisconnected ConnectionStatus = "disconnected"
 	StatusError        ConnectionStatus = "error"
+	StatusBackground   ConnectionStatus = "background"
 )
+
+// ErrNotSupported 表示协议不支持该操作
+var ErrNotSupported = errors.New("该协议不支持此操作")
 
 // Session 表示一个远程会话
 type Session interface {
@@ -40,4 +46,13 @@ type Session interface {
 
 	// GetDuration 返回连接持续时间
 	GetDuration() time.Duration
+
+	// Detach 将会话从终端分离（挂到后台）
+	Detach() error
+
+	// Attach 将会话附加到终端（从后台切回前台）
+	Attach(stdin io.Reader, stdout io.Writer) error
+
+	// IsAttached 返回会话是否已附加到终端
+	IsAttached() bool
 }

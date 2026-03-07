@@ -14,6 +14,7 @@ import (
 
 	"trelay/internal/config"
 	"trelay/internal/protocol"
+	sshpkg "trelay/internal/protocol/ssh"
 	"trelay/internal/ui/dialogs"
 	"trelay/pkg/models"
 
@@ -95,6 +96,11 @@ type App struct {
 	// 编辑连接对话框相关字段
 	showEditDialog bool                          // 是否显示编辑连接对话框
 	editDialog     *dialogs.EditConnectionDialog // 编辑连接对话框实例
+
+	// 后台会话相关字段
+	showSessionList    bool // 是否显示后台会话列表
+	sessionListCursor  int  // 后台会话列表光标
+	pendingSSHSession  *sshpkg.PTYSession // 等待 attach 的 SSH 会话
 }
 
 // NewApp 创建新的应用程序实例
@@ -208,6 +214,19 @@ type hostStatusResult struct {
 	statuses map[string]string // hostName -> "online"/"offline"
 }
 
+// sshSessionMsg SSH 会话完成/detach 消息
+type sshSessionMsg struct {
+	hostID string
+	err    error
+}
+
+// sshConnectResultMsg SSH 连接结果消息
+type sshConnectResultMsg struct {
+	session *sshpkg.PTYSession
+	err     error
+	host    *models.Host
+}
+
 // checkHostStatusAsync 异步检查主机状态，不阻塞 UI 线程
 func (a *App) checkHostStatusAsync() tea.Cmd {
 	type hostInfo struct {
@@ -278,7 +297,43 @@ func (a *App) toggleSearchMode() {
 }
 
 // executeConnection 执行连接
-func (a *App) executeConnection(host *models.Host) {
+func (a *App) executeConnection(host *models.Host) tea.Cmd {
+	switch host.Protocol {
+	case "ssh":
+		// SSH 使用进程内 PTY 模式，支持后台化
+		return a.executeSSHConnection(host)
+	case "rdp", "vnc":
+		// RDP/VNC 仍使用 syscall.Exec 模式
+		a.executeExternalConnection(host)
+		return nil
+	default:
+		a.logger.Error("不支持的协议", zap.String("protocol", host.Protocol))
+		return nil
+	}
+}
+
+// executeSSHConnection 使用进程内 PTY 执行 SSH 连接
+func (a *App) executeSSHConnection(host *models.Host) tea.Cmd {
+	// 异步建立 SSH 连接
+	return func() tea.Msg {
+		client := sshpkg.NewClient(host)
+		if err := client.Connect(); err != nil {
+			return sshConnectResultMsg{err: fmt.Errorf("SSH连接失败: %w", err), host: host}
+		}
+
+		// 创建后台 PTY 会话
+		ptySession, err := client.StartBackgroundSession()
+		if err != nil {
+			client.Disconnect()
+			return sshConnectResultMsg{err: fmt.Errorf("创建SSH会话失败: %w", err), host: host}
+		}
+
+		return sshConnectResultMsg{session: ptySession, host: host}
+	}
+}
+
+// executeExternalConnection 使用 syscall.Exec 执行外部连接（RDP/VNC）
+func (a *App) executeExternalConnection(host *models.Host) {
 	// 获取当前可执行文件路径
 	execPath, err := os.Executable()
 	if err != nil {
@@ -291,12 +346,6 @@ func (a *App) executeConnection(host *models.Host) {
 	args = append(args, execPath)
 
 	switch host.Protocol {
-	case "ssh":
-		args = append(args, "--direct-ssh", host.Name)
-		// 如果主机配置了密码，则传递密码参数
-		if host.Password != "" {
-			args = append(args, "--password", host.Password)
-		}
 	case "rdp":
 		args = append(args, "--direct-rdp", host.Name)
 	case "vnc":
@@ -305,16 +354,11 @@ func (a *App) executeConnection(host *models.Host) {
 		if host.Password != "" {
 			args = append(args, "--password", host.Password)
 		}
-	default:
-		a.logger.Error("不支持的协议", zap.String("protocol", host.Protocol))
-		fmt.Printf("不支持的协议: %s\n", host.Protocol)
-		return
 	}
 
 	args = append(args, "--return-to-trelay")
 
 	// 使用 syscall.Exec 直接替换当前进程运行直接连接
-	// 这样可以完全控制终端，避免与Bubble Tea事件循环的冲突
 	a.quitting = true
 	err = syscall.Exec(execPath, args, os.Environ())
 
@@ -323,6 +367,16 @@ func (a *App) executeConnection(host *models.Host) {
 		a.logger.Error("启动直接连接失败", zap.Error(err))
 		fmt.Printf("启动直接连接失败: %v\n", err)
 	}
+}
+
+// attachSSHSession 将 SSH 会话附加到终端
+func (a *App) attachSSHSession(session *sshpkg.PTYSession) tea.Cmd {
+	adapter := sshpkg.NewExecAdapter(session)
+	hostID := session.GetHostID()
+
+	return tea.Exec(adapter, func(err error) tea.Msg {
+		return sshSessionMsg{hostID: hostID, err: err}
+	})
 }
 
 // promptRestart 提示用户重启程序
@@ -397,6 +451,58 @@ func (a *App) Init() tea.Cmd {
 
 // Update 处理消息和更新状态
 func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// 如果显示后台会话列表，先处理
+	if a.showSessionList {
+		if keyMsg, ok := msg.(tea.KeyMsg); ok {
+			bgSessions := a.connManager.GetBackgroundSessions()
+			switch keyMsg.String() {
+			case "esc", "q":
+				a.showSessionList = false
+				return a, nil
+			case "up", "k":
+				if a.sessionListCursor > 0 {
+					a.sessionListCursor--
+				}
+				return a, nil
+			case "down", "j":
+				if a.sessionListCursor < len(bgSessions)-1 {
+					a.sessionListCursor++
+				}
+				return a, nil
+			case "enter":
+				// 切回前台
+				if a.sessionListCursor < len(bgSessions) {
+					session := bgSessions[a.sessionListCursor]
+					if ptySession, ok := session.(*sshpkg.PTYSession); ok && ptySession.IsAlive() {
+						a.showSessionList = false
+						return a, a.attachSSHSession(ptySession)
+					}
+				}
+				return a, nil
+			case "d", "D":
+				// 断开选中的后台会话
+				if a.sessionListCursor < len(bgSessions) {
+					session := bgSessions[a.sessionListCursor]
+					a.connManager.RemoveSession(session.GetHostID())
+					// 更新光标
+					newSessions := a.connManager.GetBackgroundSessions()
+					if len(newSessions) == 0 {
+						a.showSessionList = false
+					} else if a.sessionListCursor >= len(newSessions) {
+						a.sessionListCursor = len(newSessions) - 1
+					}
+				}
+				return a, nil
+			}
+		}
+		// 仍需处理 WindowSizeMsg
+		if wMsg, ok := msg.(tea.WindowSizeMsg); ok {
+			a.width = wMsg.Width
+			a.height = wMsg.Height
+		}
+		return a, nil
+	}
+
 	// 如果显示密码输入对话框，先让对话框处理消息
 	if a.showPasswordDialog && a.passwordDialog != nil {
 		updated, cmd := a.passwordDialog.Update(msg)
@@ -409,8 +515,11 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				host := a.passwordDialog.Host()
 				// 设置密码
 				host.Password = a.passwordDialog.GetPassword()
+				// 关闭对话框
+				a.showPasswordDialog = false
+				a.passwordDialog = nil
 				// 执行连接
-				a.executeConnection(host)
+				return a, a.executeConnection(host)
 			}
 			// 关闭对话框
 			a.showPasswordDialog = false
@@ -696,6 +805,39 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.lastStatusCheck = time.Now()
 		return a, nil
 
+	case sshConnectResultMsg:
+		// SSH 异步连接完成
+		a.connecting = false
+		if msg.err != nil {
+			a.logger.Error("SSH连接失败", zap.Error(msg.err))
+			a.showErrorDialog = true
+			a.errorDialog = dialogs.NewErrorDialog(msg.err.Error(), a.width, a.height)
+			return a, nil
+		}
+		// 连接成功，将会话加入管理器并 attach 到终端
+		a.connManager.AddSession(msg.session)
+		a.logger.Info("SSH连接成功，进入交互模式", zap.String("host", msg.host.Name))
+		return a, a.attachSSHSession(msg.session)
+
+	case sshSessionMsg:
+		// SSH 会话从前台返回（detach 或结束）
+		a.connecting = false
+		if session, ok := a.connManager.GetSession(msg.hostID); ok {
+			if ptySession, ok := session.(*sshpkg.PTYSession); ok {
+				if ptySession.IsAlive() {
+					// 会话仍然存活 → 已后台化
+					a.logger.Info("SSH会话已挂起到后台", zap.String("host", msg.hostID))
+				} else {
+					// 会话已结束 → 清理
+					a.connManager.RemoveSession(msg.hostID)
+					a.logger.Info("SSH会话已结束", zap.String("host", msg.hostID))
+				}
+			}
+		}
+		// 清理已断开的会话
+		a.connManager.CleanupDeadSessions()
+		return a, nil
+
 	case tea.KeyMsg:
 		// 搜索模式下的输入处理优先
 		if a.searchMode {
@@ -777,7 +919,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					a.passwordDialog = dialogs.NewPasswordDialog(host, a.width, a.height)
 				} else {
 					// 直接执行连接
-					a.executeConnection(host)
+					return a, a.executeConnection(host)
 				}
 			}
 			return a, nil
@@ -814,6 +956,15 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// 显示新建分组对话框
 			a.showNewGroupDialog = true
 			a.newGroupDialog = dialogs.NewNewGroupDialog(a.width, a.height)
+			return a, nil
+
+		case "B", "b":
+			// 显示后台会话列表
+			bgSessions := a.connManager.GetBackgroundSessions()
+			if len(bgSessions) > 0 {
+				a.showSessionList = true
+				a.sessionListCursor = 0
+			}
 			return a, nil
 
 		case "E", "e":
@@ -889,6 +1040,11 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // View 渲染界面
 func (a *App) View() string {
+	// 后台会话列表弹窗优先显示
+	if a.showSessionList {
+		return a.renderSessionList()
+	}
+
 	// 错误对话框优先显示（即使未初始化完成）
 	if a.showErrorDialog && a.errorDialog != nil {
 		var dialogView string
@@ -1403,7 +1559,12 @@ func (a *App) renderStatusBar() string {
 	// 连接状态
 	totalHosts := len(a.filteredHosts)
 	selectedIndex := a.selected + 1
+	bgCount := a.connManager.GetBackgroundCount()
+
 	status := fmt.Sprintf("%d/%d hosts | [↑/↓] 选择 | [Enter] 连接", selectedIndex, totalHosts)
+	if bgCount > 0 {
+		status += fmt.Sprintf(" | 后台: %d", bgCount)
+	}
 
 	statusStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#00aa00")).
@@ -1441,9 +1602,81 @@ func (a *App) renderHelp() string {
 		Italic(true).
 		Width(a.width - 4).
 		Align(lipgloss.Center)
-	helpText := "键盘: ↑↓ 选择 | Enter 连接 | Tab 分组 | / 搜索 | R 刷新 | N 新建 | E 编辑 | G 新建分组 | Q 退出"
+	helpText := "键盘: ↑↓ 选择 | Enter 连接 | Tab 分组 | / 搜索 | R 刷新 | N 新建 | E 编辑 | G 新建分组 | B 后台会话 | Q 退出"
 
 	return helpStyle.Render(helpText)
+}
+
+// renderSessionList 渲染后台会话列表弹窗
+func (a *App) renderSessionList() string {
+	bgSessions := a.connManager.GetBackgroundSessions()
+
+	// 弹窗样式
+	dialogWidth := 60
+	if a.width > 0 && a.width < dialogWidth+4 {
+		dialogWidth = a.width - 4
+	}
+
+	borderStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#00aa00")).
+		Padding(1, 2).
+		Width(dialogWidth)
+
+	titleStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#00ff00")).
+		Bold(true)
+
+	itemStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#00ff00"))
+
+	selectedStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#000000")).
+		Background(lipgloss.Color("#00ff00")).
+		Bold(true)
+
+	helpStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#888888")).
+		Italic(true)
+
+	var lines []string
+	lines = append(lines, titleStyle.Render("后台会话列表"))
+	lines = append(lines, "")
+
+	if len(bgSessions) == 0 {
+		lines = append(lines, itemStyle.Render("  没有后台会话"))
+	} else {
+		for i, session := range bgSessions {
+			duration := session.GetDuration()
+			durationStr := formatDuration(duration)
+			line := fmt.Sprintf("  %s  (%s)", session.GetHostID(), durationStr)
+
+			if i == a.sessionListCursor {
+				lines = append(lines, selectedStyle.Render(line))
+			} else {
+				lines = append(lines, itemStyle.Render(line))
+			}
+		}
+	}
+
+	lines = append(lines, "")
+	lines = append(lines, helpStyle.Render("Enter:切回 | D:断开 | Esc:关闭"))
+
+	content := strings.Join(lines, "\n")
+	dialog := borderStyle.Render(content)
+
+	// 居中显示
+	return lipgloss.Place(a.width, a.height, lipgloss.Center, lipgloss.Center, dialog)
+}
+
+// formatDuration 格式化持续时间
+func formatDuration(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	} else if d < time.Hour {
+		return fmt.Sprintf("%dm%ds", int(d.Minutes()), int(d.Seconds())%60)
+	}
+	return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
 }
 
 // Run 运行TUI应用程序
@@ -1464,6 +1697,9 @@ func Run(logger *zap.Logger) error {
 	if _, err := p.Run(); err != nil {
 		return err
 	}
+
+	// TUI 退出时，清理所有后台会话
+	app.connManager.DisconnectAll()
 
 	return nil
 }

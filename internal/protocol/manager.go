@@ -32,6 +32,33 @@ func NewManager() *Manager {
 	}
 }
 
+// AddSession 添加后台会话
+func (m *Manager) AddSession(session Session) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	hostID := session.GetHostID()
+	m.sessions[hostID] = session
+	m.addToHistory(session, StatusConnected)
+}
+
+// RemoveSession 移除会话
+func (m *Manager) RemoveSession(hostID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if session, ok := m.sessions[hostID]; ok {
+		if session.IsConnected() {
+			session.Disconnect()
+		}
+		m.addToHistory(session, StatusDisconnected)
+		delete(m.sessions, hostID)
+		if m.activeSession == hostID {
+			m.activeSession = ""
+		}
+	}
+}
+
 // Connect 连接主机
 func (m *Manager) Connect(session Session) error {
 	m.mu.Lock()
@@ -70,6 +97,7 @@ func (m *Manager) Disconnect(hostID string) error {
 		if session.IsConnected() {
 			err := session.Disconnect()
 			m.addToHistory(session, StatusDisconnected)
+			delete(m.sessions, hostID)
 			if hostID == m.activeSession {
 				m.activeSession = ""
 			}
@@ -127,18 +155,62 @@ func (m *Manager) GetActiveSessions() []Session {
 	return sessions
 }
 
+// GetBackgroundSessions 获取所有后台会话（已连接但未附加到终端）
+func (m *Manager) GetBackgroundSessions() []Session {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var sessions []Session
+	for _, session := range m.sessions {
+		if session.IsConnected() && !session.IsAttached() {
+			sessions = append(sessions, session)
+		}
+	}
+	return sessions
+}
+
+// GetBackgroundCount 获取后台会话数量
+func (m *Manager) GetBackgroundCount() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	count := 0
+	for _, session := range m.sessions {
+		if session.IsConnected() && !session.IsAttached() {
+			count++
+		}
+	}
+	return count
+}
+
+// CleanupDeadSessions 清理已断开的会话
+func (m *Manager) CleanupDeadSessions() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for hostID, session := range m.sessions {
+		if !session.IsConnected() {
+			delete(m.sessions, hostID)
+			if m.activeSession == hostID {
+				m.activeSession = ""
+			}
+		}
+	}
+}
+
 // DisconnectAll 断开所有连接
 func (m *Manager) DisconnectAll() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	var lastErr error
-	for _, session := range m.sessions {
+	for hostID, session := range m.sessions {
 		if session.IsConnected() {
 			if err := session.Disconnect(); err != nil {
 				lastErr = err
 			}
 		}
+		delete(m.sessions, hostID)
 	}
 
 	m.activeSession = ""

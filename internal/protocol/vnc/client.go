@@ -3,6 +3,7 @@ package vnc
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"os/exec"
 	"strings"
 	"syscall"
@@ -308,6 +309,21 @@ func (c *Client) GetToolName() string {
 // GetInstallHelp 获取安装帮助信息
 func (c *Client) GetInstallHelp() string {
 	return c.installHelp.GetInstallHelp()
+}
+
+// Detach 将会话从终端分离（VNC不支持后台化）
+func (c *Client) Detach() error {
+	return fmt.Errorf("VNC协议不支持后台化")
+}
+
+// Attach 将会话附加到终端（VNC不支持后台化）
+func (c *Client) Attach(stdin io.Reader, stdout io.Writer) error {
+	return fmt.Errorf("VNC协议不支持后台化")
+}
+
+// IsAttached 返回会话是否已附加到终端
+func (c *Client) IsAttached() bool {
+	return false
 }
 
 // GetConnectionHint 获取连接提示

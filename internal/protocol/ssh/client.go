@@ -3,6 +3,7 @@ package ssh
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"runtime"
 	"syscall"
@@ -171,6 +172,40 @@ func (c *Client) GetDuration() time.Duration {
 		return 0
 	}
 	return time.Since(*c.startTime)
+}
+
+// Detach 将会话从终端分离（基础SSH客户端不支持，需使用PTYSession）
+func (c *Client) Detach() error {
+	return protocol.ErrNotSupported
+}
+
+// Attach 将会话附加到终端（基础SSH客户端不支持，需使用PTYSession）
+func (c *Client) Attach(stdin io.Reader, stdout io.Writer) error {
+	return protocol.ErrNotSupported
+}
+
+// IsAttached 返回会话是否已附加到终端
+func (c *Client) IsAttached() bool {
+	return false
+}
+
+// StartBackgroundSession 启动后台SSH会话，返回可控的PTYSession
+// 调用方通过 PTYSession.Attach()/Detach() 控制前台/后台切换
+func (c *Client) StartBackgroundSession() (*PTYSession, error) {
+	if c.client == nil {
+		return nil, errors.New("未连接到SSH服务器")
+	}
+
+	session := NewPTYSession(c.host, c.client)
+	if err := session.Start(); err != nil {
+		return nil, err
+	}
+
+	// SSH连接的所有权转移给PTYSession，防止Client.Disconnect()关闭连接
+	c.client = nil
+	c.status = protocol.StatusConnected
+
+	return session, nil
 }
 
 // StartInteractiveSession 启动交互式SSH会话

@@ -25,6 +25,8 @@
   - 支持只读模式（view_only）
   - 提供详细的安装帮助和错误提示
 - **智能返回**：SSH/RDP/VNC连接结束后自动返回trelay界面
+- **SSH会话后台化**：SSH会话支持挂起到后台，按 Ctrl+B 暂时离开会话，随时切回继续操作
+- **后台会话管理**：按 B 键查看后台会话列表，支持切回前台或断开会话
 - **新增连接配置**：按下N或n键，显示交互式对话框，支持配置服务器名称、IP地址、用户名、连接协议、认证方式和分组
 - **密码弹窗功能**：当连接未配置密码的SSH主机时，会显示密码输入弹窗，提高安全性
 - **连接失败提示**：连接失败时显示错误弹窗，按Enter键返回主界面，方便用户查看详细错误信息
@@ -76,6 +78,9 @@ trelay/
 │   │   ├── manager.go           # 连接管理器
 │   │   ├── session.go           # 会话管理
 │   │   ├── ssh/                 # SSH协议实现
+│   │   │   ├── client.go        # SSH客户端
+│   │   │   ├── pty_session.go   # PTY会话（支持后台化）
+│   │   │   └── exec_adapter.go  # tea.ExecCommand适配器
 │   │   ├── rdp/                 # RDP协议实现
 │   │   │   ├── types.go          # 工具类型定义
 │   │   │   ├── selector.go       # 平台特定工具优先级
@@ -190,9 +195,13 @@ trelay --help
 │   N/n : 新建连接配置                         │
 │   E : 编辑选中连接                           │
 │   G/g : 新建分组                             │
+│   B/b : 后台会话列表                         │
 │   D/Delete : 删除选中连接                    │
 │   / : 进入搜索模式                           │
 │   Q : 退出程序                               │
+│                                             │
+│ SSH会话模式：                                │
+│   Ctrl+B : 挂起到后台（可随时切回）          │
 │                                             │
 │ 搜索模式：                                   │
 │   输入 : 搜索主机                            │
@@ -221,6 +230,12 @@ trelay --help
 │ 错误提示对话框：                             │
 │   Enter : 关闭错误提示                        │
 │   Esc : 关闭错误提示                         │
+│                                             │
+│ 后台会话列表：                               │
+│   ↑/↓ : 选择会话                             │
+│   Enter : 切回前台                           │
+│   D : 断开选中会话                           │
+│   Esc : 关闭列表                             │
 └─────────────────────────────────────────────┘
 ```
 
@@ -523,6 +538,29 @@ go test -cover ./...
 - [Cobra](https://github.com/spf13/cobra) - Go命令行框架
 
 ## 📋 更新日志
+
+### 2026-03-07
+
+#### 新增功能
+- **SSH会话后台化**：SSH连接支持挂起到后台，随时切回继续操作
+  - 在SSH会话中按 `Ctrl+B` 可将会话挂起到后台
+  - 按 `B` 键打开后台会话列表，查看所有后台会话
+  - 支持从后台列表切回前台或断开会话
+  - 状态栏显示当前后台会话数量
+  - 会话时长实时显示
+
+#### 架构改进
+- SSH连接从 `syscall.Exec` 模式改为进程内 PTY 模式
+  - 新增 `PTYSession` 类型，支持前台/后台切换
+  - 新增 `ExecAdapter` 适配器，实现 `tea.ExecCommand` 接口
+  - Session 接口新增 `Detach()`、`Attach()`、`IsAttached()` 方法
+
+#### 代码变更
+- 新增 `internal/protocol/ssh/pty_session.go` - PTY会话实现
+- 新增 `internal/protocol/ssh/exec_adapter.go` - tea.ExecCommand适配器
+- 更新 `internal/protocol/session.go` - 扩展Session接口
+- 更新 `internal/protocol/manager.go` - 新增后台会话管理方法
+- 更新 `internal/ui/tui/app.go` - SSH连接改为进程内模式，新增后台会话列表UI
 
 ### 2026-03-05
 
