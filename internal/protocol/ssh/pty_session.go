@@ -10,6 +10,7 @@ import (
 	"trelay/internal/protocol"
 	"trelay/pkg/models"
 
+	"github.com/muesli/cancelreader"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -31,6 +32,9 @@ type PTYSession struct {
 	// I/O 转发控制
 	ioCancel context.CancelFunc
 	ioWg     sync.WaitGroup
+
+	// 残留数据：detach 时可能已从 stdin 读取但未发送的数据
+	pendingInput []byte
 }
 
 // NewPTYSession 创建SSH会话
@@ -165,14 +169,30 @@ func (p *PTYSession) Attach(stdin io.Reader, stdout io.Writer, isResume bool) er
 	p.ioCancel = cancel
 	p.mu.Unlock()
 
+	// 处理上次 detach 时残留的输入数据
+	p.mu.Lock()
+	if len(p.pendingInput) > 0 {
+		p.stdinPipe.Write(p.pendingInput)
+		p.pendingInput = p.pendingInput[:0] // 清空
+	}
+	p.mu.Unlock()
+
 	// 使用 channel 来传递读取结果
 	type readResult struct {
-		n   int
-		err error
+		data []byte
+		err  error
 	}
-	stdinReadCh := make(chan readResult, 1)
 	stdoutReadCh := make(chan readResult, 1)
 	stderrReadCh := make(chan readResult, 1)
+
+	// 使用 cancelreader 包装 stdin，这样可以在需要时取消阻塞的读取
+	// 这是解决字符丢失问题的关键：退出时可以取消正在进行的读取
+	cr, err := cancelreader.NewReader(stdin)
+	if err != nil {
+		cancel()
+		return fmt.Errorf("创建 cancelreader 失败: %w", err)
+	}
+	defer cr.Close()
 
 	// 启动双向 I/O 转发
 	// stdin → SSH stdin（用户输入 → SSH）
@@ -183,45 +203,50 @@ func (p *PTYSession) Attach(stdin io.Reader, stdout io.Writer, isResume bool) er
 		for {
 			select {
 			case <-ctx.Done():
+				// 取消正在进行的读取
+				cr.Cancel()
 				return
 			case <-p.done:
+				cr.Cancel()
 				return
 			default:
 			}
 
-			// 在 goroutine 中执行阻塞读取
-			go func() {
-				n, err := stdin.Read(buf)
-				stdinReadCh <- readResult{n: n, err: err}
-			}()
-
-			select {
-			case <-ctx.Done():
+			// 使用 cancelreader 进行阻塞读取
+			n, err := cr.Read(buf)
+			if err != nil {
+				// 读取被取消或出错，退出
 				return
-			case <-p.done:
-				return
-			case result := <-stdinReadCh:
-				if result.err != nil {
-					return
-				}
-				n := result.n
+			}
+			if n == 0 {
+				continue
+			}
 
-				// 检测 detach 快捷键 Ctrl+B (0x02)
-				for i := 0; i < n; i++ {
-					if buf[i] == 0x02 {
-						// 写入 Ctrl+B 之前的数据
-						if i > 0 {
-							p.stdinPipe.Write(buf[:i])
-						}
-						// 触发 detach
-						cancel()
-						return
+			// 复制数据
+			data := make([]byte, n)
+			copy(data, buf[:n])
+
+			// 检测 detach 快捷键 Ctrl+B (0x02)
+			for i := 0; i < len(data); i++ {
+				if data[i] == 0x02 {
+					// 写入 Ctrl+B 之前的数据
+					if i > 0 {
+						p.stdinPipe.Write(data[:i])
 					}
-				}
-
-				if _, err := p.stdinPipe.Write(buf[:n]); err != nil {
+					// 保存 Ctrl+B 之后的数据（如果有）
+					if i+1 < len(data) {
+						p.mu.Lock()
+						p.pendingInput = append(p.pendingInput, data[i+1:]...)
+						p.mu.Unlock()
+					}
+					// 触发 detach
+					cancel()
 					return
 				}
+			}
+
+			if _, err := p.stdinPipe.Write(data); err != nil {
+				return
 			}
 		}
 	}()
@@ -243,7 +268,10 @@ func (p *PTYSession) Attach(stdin io.Reader, stdout io.Writer, isResume bool) er
 			// 在 goroutine 中执行阻塞读取
 			go func() {
 				n, err := p.stdoutPipe.Read(buf)
-				stdoutReadCh <- readResult{n: n, err: err}
+				// 复制数据，避免 buf 被覆盖
+				data := make([]byte, n)
+				copy(data, buf[:n])
+				stdoutReadCh <- readResult{data: data, err: err}
 			}()
 
 			select {
@@ -255,7 +283,7 @@ func (p *PTYSession) Attach(stdin io.Reader, stdout io.Writer, isResume bool) er
 				if result.err != nil {
 					return
 				}
-				if _, err := stdout.Write(buf[:result.n]); err != nil {
+				if _, err := stdout.Write(result.data); err != nil {
 					return
 				}
 			}
@@ -279,7 +307,10 @@ func (p *PTYSession) Attach(stdin io.Reader, stdout io.Writer, isResume bool) er
 			// 在 goroutine 中执行阻塞读取
 			go func() {
 				n, err := p.stderrPipe.Read(buf)
-				stderrReadCh <- readResult{n: n, err: err}
+				// 复制数据，避免 buf 被覆盖
+				data := make([]byte, n)
+				copy(data, buf[:n])
+				stderrReadCh <- readResult{data: data, err: err}
 			}()
 
 			select {
@@ -291,19 +322,22 @@ func (p *PTYSession) Attach(stdin io.Reader, stdout io.Writer, isResume bool) er
 				if result.err != nil {
 					return
 				}
-				if _, err := stdout.Write(buf[:result.n]); err != nil {
+				if _, err := stdout.Write(result.data); err != nil {
 					return
 				}
 			}
 		}
 	}()
 
-	// 如果是恢复会话，发送 Ctrl+L 让远程 shell 重绘屏幕
-	// 必须在 I/O 转发启动后发送，这样重绘输出才能被用户看到
+	// 如果是恢复会话，发送回车让远程 shell 显示提示符
+	// 必须在 I/O 转发启动后发送，这样输出才能被用户看到
 	if isResume {
+		// 等待一小段时间确保 I/O 转发 goroutine 已经开始工作
+		time.Sleep(50 * time.Millisecond)
 		p.mu.Lock()
 		if p.stdinPipe != nil {
-			p.stdinPipe.Write([]byte("\x0c")) // Ctrl+L = 0x0c
+			// 发送回车触发远程 shell 显示提示符
+			p.stdinPipe.Write([]byte("\r"))
 		}
 		p.mu.Unlock()
 	}
