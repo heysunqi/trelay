@@ -140,7 +140,8 @@ func (p *PTYSession) Start() error {
 
 // Attach 将 SSH 会话连接到真实终端（前台模式）
 // 返回时表示用户已 detach 或 session 已结束
-func (p *PTYSession) Attach(stdin io.Reader, stdout io.Writer) error {
+// isResume: true 表示从后台恢复会话，会发送 Ctrl+L 触发远程 shell 重绘
+func (p *PTYSession) Attach(stdin io.Reader, stdout io.Writer, isResume bool) error {
 	p.mu.Lock()
 	if p.stdinPipe == nil || p.stdoutPipe == nil {
 		p.mu.Unlock()
@@ -297,6 +298,16 @@ func (p *PTYSession) Attach(stdin io.Reader, stdout io.Writer) error {
 		}
 	}()
 
+	// 如果是恢复会话，发送 Ctrl+L 让远程 shell 重绘屏幕
+	// 必须在 I/O 转发启动后发送，这样重绘输出才能被用户看到
+	if isResume {
+		p.mu.Lock()
+		if p.stdinPipe != nil {
+			p.stdinPipe.Write([]byte("\x0c")) // Ctrl+L = 0x0c
+		}
+		p.mu.Unlock()
+	}
+
 	// 等待 detach 或 session 结束
 	select {
 	case <-ctx.Done():
@@ -446,4 +457,15 @@ func (p *PTYSession) ResizeTerminal(rows, cols int) error {
 	}
 
 	return p.session.WindowChange(rows, cols)
+}
+
+// SendCtrlL 发送 Ctrl+L 到远程 shell，触发屏幕重绘
+// 用于从后台恢复会话时刷新终端显示
+func (p *PTYSession) SendCtrlL() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.stdinPipe != nil {
+		p.stdinPipe.Write([]byte("\x0c")) // Ctrl+L = 0x0c
+	}
 }

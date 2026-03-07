@@ -51,7 +51,8 @@ type Session interface {
 	Detach() error
 
 	// Attach 将会话附加到终端（从后台切回前台）
-	Attach(stdin io.Reader, stdout io.Writer) error
+	// isResume: true 表示从后台恢复会话，会触发远程 shell 重绘
+	Attach(stdin io.Reader, stdout io.Writer, isResume bool) error
 
 	// IsAttached 返回会话是否已附加到终端
 	IsAttached() bool

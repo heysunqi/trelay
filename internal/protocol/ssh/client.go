@@ -180,7 +180,7 @@ func (c *Client) Detach() error {
 }
 
 // Attach 将会话附加到终端（基础SSH客户端不支持，需使用PTYSession）
-func (c *Client) Attach(stdin io.Reader, stdout io.Writer) error {
+func (c *Client) Attach(stdin io.Reader, stdout io.Writer, isResume bool) error {
 	return protocol.ErrNotSupported
 }
 

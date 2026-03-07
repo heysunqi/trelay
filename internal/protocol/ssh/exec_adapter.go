@@ -11,15 +11,18 @@ import (
 // ExecAdapter 将 PTYSession 适配为 tea.ExecCommand 接口
 // 实现 Run() / SetStdin() / SetStdout() / SetStderr()
 type ExecAdapter struct {
-	Session *PTYSession
-	stdin   io.Reader
-	stdout  io.Writer
+	Session  *PTYSession
+	stdin    io.Reader
+	stdout   io.Writer
+	isResume bool // 是否是从后台恢复的会话
 }
 
 // NewExecAdapter 创建 ExecAdapter
-func NewExecAdapter(session *PTYSession) *ExecAdapter {
+// isResume: true 表示从后台恢复会话，false 表示首次连接
+func NewExecAdapter(session *PTYSession, isResume bool) *ExecAdapter {
 	return &ExecAdapter{
-		Session: session,
+		Session:  session,
+		isResume: isResume,
 	}
 }
 
@@ -44,9 +47,11 @@ func (e *ExecAdapter) Run() error {
 		return fmt.Errorf("stdin/stdout 未设置")
 	}
 
-	// 清屏并移动光标到左上角（在设置 raw mode 之前）
-	// 这样 SSH shell 首次连接时内容会展示在屏幕最顶端
-	fmt.Print("\033[2J\033[H")
+	if !e.isResume {
+		// 首次连接：清屏并移动光标到左上角
+		// 这样 SSH shell 首次连接时内容会展示在屏幕最顶端
+		fmt.Print("\033[2J\033[H")
+	}
 
 	// 重要：Bubble Tea 的 p.input 可能是 cancelreader，在 ReleaseTerminal 后被取消
 	// 我们需要直接使用 os.Stdin 和 os.Stdout，而不是通过 cancelreader
@@ -62,5 +67,6 @@ func (e *ExecAdapter) Run() error {
 
 	// 直接使用 os.Stdin 和 os.Stdout，而不是 Bubble Tea 传递的 cancelreader
 	// Attach 会阻塞，直到用户 Ctrl+B detach 或 SSH session 结束
-	return e.Session.Attach(os.Stdin, os.Stdout)
+	// 如果是恢复会话，Attach 内部会发送 Ctrl+L 让远程 shell 重绘
+	return e.Session.Attach(os.Stdin, os.Stdout, e.isResume)
 }

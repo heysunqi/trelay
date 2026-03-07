@@ -370,8 +370,9 @@ func (a *App) executeExternalConnection(host *models.Host) {
 }
 
 // attachSSHSession 将 SSH 会话附加到终端
-func (a *App) attachSSHSession(session *sshpkg.PTYSession) tea.Cmd {
-	adapter := sshpkg.NewExecAdapter(session)
+// isResume: true 表示从后台恢复会话，false 表示首次连接
+func (a *App) attachSSHSession(session *sshpkg.PTYSession, isResume bool) tea.Cmd {
+	adapter := sshpkg.NewExecAdapter(session, isResume)
 	hostID := session.GetHostID()
 
 	return tea.Exec(adapter, func(err error) tea.Msg {
@@ -475,7 +476,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					session := bgSessions[a.sessionListCursor]
 					if ptySession, ok := session.(*sshpkg.PTYSession); ok && ptySession.IsAlive() {
 						a.showSessionList = false
-						return a, a.attachSSHSession(ptySession)
+						return a, a.attachSSHSession(ptySession, true) // 从后台恢复
 					}
 				}
 				return a, nil
@@ -817,7 +818,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// 连接成功，将会话加入管理器并 attach 到终端
 		a.connManager.AddSession(msg.session)
 		a.logger.Info("SSH连接成功，进入交互模式", zap.String("host", msg.host.Name))
-		return a, a.attachSSHSession(msg.session)
+		return a, a.attachSSHSession(msg.session, false) // 首次连接
 
 	case sshSessionMsg:
 		// SSH 会话从前台返回（detach 或结束）
@@ -917,7 +918,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						if ptySession.IsConnected() && !ptySession.IsAttached() && ptySession.IsAlive() {
 							// 复用已有的后台会话
 							a.connecting = true
-							return a, a.attachSSHSession(ptySession)
+							return a, a.attachSSHSession(ptySession, true) // 从后台恢复
 						}
 					}
 				}

@@ -294,7 +294,7 @@ func (c *Client) Detach() error {
 }
 
 // Attach 将会话附加到终端（RDP不支持后台化）
-func (c *Client) Attach(stdin io.Reader, stdout io.Writer) error {
+func (c *Client) Attach(stdin io.Reader, stdout io.Writer, isResume bool) error {
 	return fmt.Errorf("RDP协议不支持后台化")
 }
 
