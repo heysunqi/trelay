@@ -1145,7 +1145,7 @@ func (a *App) renderTitle() string {
 		Foreground(lipgloss.Color("#00ff00")).
 		Padding(0, 1)
 
-	title := "远程桌面管理器"
+	title := "远程连接管理器"
 	if a.currentGroup != "" {
 		title += " - " + a.currentGroup
 	}
