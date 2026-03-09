@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"runtime"
 	"syscall"
 	"time"
@@ -257,6 +258,18 @@ func (c *Client) StartInteractiveSession() error {
 	if err := session.Shell(); err != nil {
 		return fmt.Errorf("启动shell失败: %w", err)
 	}
+
+	// 监听终端窗口大小变化，同步到远程 PTY
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGWINCH)
+	defer signal.Stop(sigCh)
+
+	go func() {
+		for range sigCh {
+			rows, cols := getTermSize()
+			session.WindowChange(int(rows), int(cols))
+		}
+	}()
 
 	// 等待会话结束
 	return session.Wait()

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"golang.org/x/term"
 )
@@ -64,6 +66,18 @@ func (e *ExecAdapter) Run() error {
 		return fmt.Errorf("设置 raw mode 失败: %w", err)
 	}
 	defer term.Restore(fd, oldState)
+
+	// 监听终端窗口大小变化，同步到远程 PTY
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGWINCH)
+	defer signal.Stop(sigCh)
+
+	go func() {
+		for range sigCh {
+			rows, cols := getTermSize()
+			e.Session.ResizeTerminal(int(rows), int(cols))
+		}
+	}()
 
 	// 直接使用 os.Stdin 和 os.Stdout，而不是 Bubble Tea 传递的 cancelreader
 	// Attach 会阻塞，直到用户 Ctrl+B detach 或 SSH session 结束
