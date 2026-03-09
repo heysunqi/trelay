@@ -997,7 +997,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 
 		case "r":
-			// 刷新配置
+			// 刷新配置并异步刷新主机在线状态
 			if cfg, err := a.configMgr.Load(); err == nil {
 				a.config = cfg
 				a.refreshHosts()
@@ -1005,7 +1005,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				a.logger.Error("刷新配置失败", zap.Error(err))
 			}
-			return a, nil
+			return a, a.checkHostStatusAsync()
 
 		default:
 			// 搜索模式下的输入处理
