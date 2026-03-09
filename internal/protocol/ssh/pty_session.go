@@ -33,6 +33,10 @@ type PTYSession struct {
 	ioCancel context.CancelFunc
 	ioWg     sync.WaitGroup
 
+	// 持久化输出通道：由 Start() 中的 goroutine 写入，由 Attach() 中的 goroutine 读取
+	// 整个会话生命周期只有一组读取 goroutine，避免 detach/re-attach 时多个 goroutine 竞争 pipe
+	outputCh chan []byte
+
 	// 残留数据：detach 时可能已从 stdin 读取但未发送的数据
 	pendingInput []byte
 }
@@ -130,6 +134,48 @@ func (p *PTYSession) Start() error {
 		return p.err
 	}
 
+	// 启动持久化管道读取 goroutine（整个会话生命周期只有一组）
+	// 避免每次 Attach/Detach 都创建新的读取 goroutine 导致多个 goroutine 竞争同一 pipe
+	p.outputCh = make(chan []byte, 256)
+
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, err := p.stdoutPipe.Read(buf)
+			if n > 0 {
+				data := make([]byte, n)
+				copy(data, buf[:n])
+				select {
+				case p.outputCh <- data:
+				case <-p.done:
+					return
+				}
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, err := p.stderrPipe.Read(buf)
+			if n > 0 {
+				data := make([]byte, n)
+				copy(data, buf[:n])
+				select {
+				case p.outputCh <- data:
+				case <-p.done:
+					return
+				}
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
 	// 在 goroutine 中等待 SSH session 结束
 	go func() {
 		_ = session.Wait()
@@ -176,14 +222,6 @@ func (p *PTYSession) Attach(stdin io.Reader, stdout io.Writer, isResume bool) er
 		p.pendingInput = p.pendingInput[:0] // 清空
 	}
 	p.mu.Unlock()
-
-	// 使用 channel 来传递读取结果
-	type readResult struct {
-		data []byte
-		err  error
-	}
-	stdoutReadCh := make(chan readResult, 1)
-	stderrReadCh := make(chan readResult, 1)
 
 	// 使用 cancelreader 包装 stdin，这样可以在需要时取消阻塞的读取
 	// 这是解决字符丢失问题的关键：退出时可以取消正在进行的读取
@@ -251,78 +289,18 @@ func (p *PTYSession) Attach(stdin io.Reader, stdout io.Writer, isResume bool) er
 		}
 	}()
 
-	// SSH stdout → stdout（SSH 输出 → 用户终端）
+	// SSH 输出 → 用户终端（从持久化 outputCh 通道读取，无 goroutine 泄漏风险）
 	p.ioWg.Add(1)
 	go func() {
 		defer p.ioWg.Done()
-		buf := make([]byte, 4096)
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-p.done:
 				return
-			default:
-			}
-
-			// 在 goroutine 中执行阻塞读取
-			go func() {
-				n, err := p.stdoutPipe.Read(buf)
-				// 复制数据，避免 buf 被覆盖
-				data := make([]byte, n)
-				copy(data, buf[:n])
-				stdoutReadCh <- readResult{data: data, err: err}
-			}()
-
-			select {
-			case <-ctx.Done():
-				return
-			case <-p.done:
-				return
-			case result := <-stdoutReadCh:
-				if result.err != nil {
-					return
-				}
-				if _, err := stdout.Write(result.data); err != nil {
-					return
-				}
-			}
-		}
-	}()
-
-	// SSH stderr → stdout（SSH 错误输出 → 用户终端）
-	p.ioWg.Add(1)
-	go func() {
-		defer p.ioWg.Done()
-		buf := make([]byte, 4096)
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-p.done:
-				return
-			default:
-			}
-
-			// 在 goroutine 中执行阻塞读取
-			go func() {
-				n, err := p.stderrPipe.Read(buf)
-				// 复制数据，避免 buf 被覆盖
-				data := make([]byte, n)
-				copy(data, buf[:n])
-				stderrReadCh <- readResult{data: data, err: err}
-			}()
-
-			select {
-			case <-ctx.Done():
-				return
-			case <-p.done:
-				return
-			case result := <-stderrReadCh:
-				if result.err != nil {
-					return
-				}
-				if _, err := stdout.Write(result.data); err != nil {
+			case data := <-p.outputCh:
+				if _, err := stdout.Write(data); err != nil {
 					return
 				}
 			}
