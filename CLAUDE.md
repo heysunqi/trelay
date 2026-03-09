@@ -17,9 +17,6 @@ make run-debug
 # Build and install to /usr/local/bin
 make install
 
-# Uninstall from system
-make uninstall
-
 # Clean build artifacts
 make clean
 
@@ -41,38 +38,34 @@ make test          # go test -v ./...
 
 # Direct SSH connection (bypasses TUI)
 ./trelay --direct-ssh "hostname"
-
-# Direct SSH connection with password (bypasses TUI)
 ./trelay --direct-ssh "hostname" --password "password"
 
-# Direct RDP connection (bypasses TUI)
+# Direct RDP/VNC connection (bypasses TUI)
 ./trelay --direct-rdp "hostname"
+./trelay --direct-vnc "hostname"
 ```
 
 ## Architecture Overview
 
-The application uses a protocol-agnostic design pattern:
-
 ```
 cmd/trelay/main.go (CLI entry point)
     ├── Loads config via internal/config/
-    ├── Handles direct connections (--direct-ssh, --direct-rdp)
+    ├── Handles direct connections (--direct-ssh, --direct-rdp, --direct-vnc)
     └── Spawns TUI via internal/ui/tui/
 
 internal/protocol/ (Protocol abstraction layer)
     ├── session.go      - Session interface (Connect, Disconnect, etc.)
-    ├── manager.go      - Connection manager
+    ├── manager.go      - Connection manager (tracks background SSH sessions)
     ├── ssh/            - SSH implementation (golang.org/x/crypto/ssh)
-    └── rdp/            - RDP implementation (external tools)
+    │   ├── client.go       - SSH client, connection, interactive session
+    │   ├── pty_session.go  - PTY session with Attach/Detach for background support
+    │   └── exec_adapter.go - Adapts PTYSession to Bubble Tea's tea.ExecCommand
+    ├── rdp/            - RDP implementation (external tools)
+    └── vnc/            - VNC implementation (external tools)
 
 internal/ui/tui/ (Bubble Tea TUI)
-    ├── app.go          - Main TUI application (~1400 lines)
-    └── dialogs/        - Dialog components
-        ├── new_connection.go  - New connection form
-        ├── edit_connection.go - Edit connection form (shares ~80% code with new_connection)
-        ├── password.go        - SSH password input
-        ├── new_group.go       - Group creation
-        └── error.go           - Error display
+    ├── app.go          - Main TUI application
+    └── dialogs/        - Dialog components (new/edit connection, password, group, error)
 
 pkg/models/ (Data models)
     ├── host.go         - Host configuration + validation
@@ -82,109 +75,97 @@ pkg/models/ (Data models)
 
 ## Key Architecture Patterns
 
-### Protocol Abstraction
+### Dual Connection Architecture: In-Process vs Process Replacement
 
-All protocols implement the `Session` interface defined in `internal/protocol/session.go`:
+This is the most important architectural distinction. SSH and RDP/VNC use fundamentally different connection strategies:
 
-```go
-type Session interface {
-    Connect() error
-    Disconnect() error
-    IsConnected() bool
-    GetStatus() ConnectionStatus
-    GetError() error
-    GetHostID() string
-    GetStartTime() *time.Time
-    GetDuration() time.Duration
-}
-```
+| Aspect | SSH | RDP / VNC |
+|--------|-----|-----------|
+| Connection method | In-process via `tea.Exec()` | `syscall.Exec` process replacement |
+| Background support | Yes (`Ctrl+B` to detach) | No |
+| Return to TUI | Bubble Tea resumes naturally | Re-exec binary with `--return-to-trelay` |
+| Session tracking | Managed by `protocol.Manager` | Not tracked |
+| Terminal restoration | `term.Restore()` in ExecAdapter | `stty sane` in `main.go:restoreTerminal()` |
 
-- `internal/protocol/ssh/client.go` - Uses `golang.org/x/crypto/ssh` library
-- `internal/protocol/rdp/client.go` - Spawns external tools (Remmina/FreeRDP) via exec.Cmd
+### SSH In-Process PTY Architecture (CRITICAL)
 
-### Connection Flow
+SSH uses an in-process PTY model with background session support. The flow through Bubble Tea:
 
-The TUI does not maintain connections directly. Instead, it uses `syscall.Exec` to replace the current process:
+1. User presses Enter → `executeSSHConnection()` returns async `tea.Cmd`
+2. Async: creates `Client`, calls `Connect()`, then `StartBackgroundSession()` which creates `PTYSession` and **transfers SSH connection ownership** from Client to PTYSession (`c.client = nil`)
+3. `sshConnectResultMsg` arrives → session stored in `connManager` → `attachSSHSession()` creates `ExecAdapter` → `tea.Exec(adapter, callback)` releases terminal to adapter
+4. Adapter sets raw mode, runs `PTYSession.Attach()` which blocks until Ctrl+B or session end
+5. `sshSessionMsg` arrives → if `IsAlive()`, session was backgrounded; otherwise cleaned up
 
-1. User selects host in TUI → `internal/ui/tui/app.go:executeConnection()`
-2. TUI execs current binary with `--direct-ssh` or `--direct-rdp` + `--return-to-trelay` flags
-3. `cmd/trelay/main.go:runDirectConnection()` handles the connection
-4. After disconnect, `--return-to-trelay` flag causes the binary to re-exec itself (without direct flags) to return to TUI
-5. **`restoreTerminal()`** is called after SSH/RDP session ends to fix terminal state
+### PTYSession Persistent Output Channel Pattern (CRITICAL)
 
-This avoids conflicts between Bubble Tea event loop and terminal control during SSH/RDP sessions.
+`pty_session.go` uses a **persistent `outputCh` channel** pattern to avoid goroutine leaks on Attach/Detach cycles:
 
-### Terminal State Restoration (CRITICAL for SSH sessions)
+- Two goroutines started in `Start()` read from `stdoutPipe`/`stderrPipe` for the **entire session lifetime**, sending data to a shared `outputCh chan []byte` (buffered, size 256)
+- `Attach()` creates a consumer goroutine that reads from `outputCh` and writes to terminal stdout
+- `Detach()` cancels the consumer; the persistent readers keep running (data buffered in channel, backpressure via SSH flow control when full)
 
-SSH sessions change terminal settings (raw mode, hidden cursor, etc.). After SSH exits:
+**NEVER add additional goroutines that read from `stdoutPipe`/`stderrPipe` directly** — this would race with the persistent readers and cause data loss. All SSH output must flow through `outputCh`.
 
-- `cmd/trelay/main.go:restoreTerminal()` is called
-- Uses `stty sane` command to reset terminal to default state
-- Sends ANSI escape sequences as fallback: `\033[?1049l` (exit alt screen), `\033[?25h` (show cursor), `\033[0m` (reset attributes)
-- Called in three places:
-  1. After successful direct SSH/RDP connection ends (before returning to TUI)
-  2. After failed direct connection (before showing error TUI)
-  3. After TUI exits (before program termination)
+### SSH Detach/Attach Mechanism
 
-If you encounter terminal corruption after SSH sessions, this function needs fixing.
+- **Ctrl+B (0x02)** is the detach hotkey, detected in the stdin forwarding goroutine
+- `cancelreader` (from `github.com/muesli/cancelreader`) wraps stdin to allow cancelling blocked reads
+- `pendingInput` preserves bytes read after Ctrl+B in the same buffer, replayed on next Attach
+- `ExecAdapter.Run()` intentionally uses `os.Stdin`/`os.Stdout` directly, **not** the Bubble Tea-provided stdin/stdout (because Bubble Tea's cancelreader gets cancelled on `ReleaseTerminal`)
 
-### RDP Tool Detection (internal/protocol/rdp/)
+### SIGWINCH Terminal Resize Handling
 
-RDP uses external tools detected at runtime:
+Terminal resize is handled in **two separate places** for two code paths:
 
-**Linux**: Remmina (GUI) → FreeRDP (CLI fallback)
-**macOS**: FreeRDP only
+1. `exec_adapter.go:Run()` — TUI path, calls `PTYSession.ResizeTerminal()`
+2. `client.go:StartInteractiveSession()` — `--direct-ssh` path, calls `session.WindowChange()` directly
 
-The detection chain:
-- `types.go` - Tool type definitions and capabilities
-- `selector.go` - Platform-specific tool priority
-- `detector.go` - `exec.LookPath()` to find available tools
-- `install_helper.go` - Detects package managers (apt/yum/dnf/pacman/apk) and generates install commands
-- `builder.go` - Command builder factory
-- `remmina_builder.go` - Builds `remmina --connect=rdp://...` commands
-- `freerdp_builder.go` - Builds `xfreerdp /v:... /u:... /p:...` commands with dynamic resolution support
+Both use `getTermSize()` in `client.go` which calls `TIOCGWINSZ` ioctl with platform-specific constants.
 
-If no tool is found, the error includes platform-specific install help.
+### RDP/VNC: Process Replacement Path
 
-### RDP Features
+RDP and VNC use `syscall.Exec` to replace the process with the connection binary:
 
-- **Dynamic Resolution Adjustment**: Remote desktop resolution automatically adjusts to window size changes
-- **Platform-Specific Error Messages**: Friendly error messages with platform-specific solutions
-  - macOS: Instructions for installing XQuartz
-  - Linux: Instructions for X server setup
-  - Both: SSH X11 forwarding option
+1. TUI calls `executeExternalConnection()` which execs with `--direct-rdp`/`--direct-vnc` + `--return-to-trelay` flags
+2. `main.go:runDirectConnection()` handles the connection
+3. After disconnect, `--return-to-trelay` causes re-exec back to TUI
+4. `restoreTerminal()` (stty sane + ANSI reset sequences) is called to fix terminal state
+
+RDP tool detection chain: `detector.go` → `selector.go` (platform priority) → `builder.go` (command factory)
+- **Linux**: Remmina (GUI) → FreeRDP (CLI fallback)
+- **macOS**: FreeRDP only
+
+VNC tool detection:
+- **Linux**: Remmina → TigerVNC
+- **macOS**: Built-in Screen Sharing via `open vnc://` URL scheme
+
+**Note**: VNC client defines its own `ConnectionStatus` type and does NOT satisfy the `protocol.Session` interface. It only works through the process replacement path.
 
 ### Configuration Management
 
 - Default config path: `~/.config/trelay/config.json`
 - Config auto-created if missing (see `internal/config/config.go:Load()`)
-- Hot reload via `r` key in TUI
+- `r` key in TUI: reloads config + triggers async host status check
 - Host grouping logic in `pkg/models/config.go:GetGroupedHosts()`
+- Tab key switches between groups; "未分组" for ungrouped hosts
 
-### Host Grouping
+### Host Status Monitoring
 
-Hosts are organized into groups (plus "未分组" for ungrouped hosts):
-- Groups defined in config contain lists of host names
-- `GetGroupedHosts()` resolves names: to host objects
-- Tab key switches between groups in TUI
+- `checkHostStatusAsync()` performs async TCP dial (2s timeout) to all hosts to determine online/offline status
+- Runs automatically every 3 seconds via `statusCheckCmd()` (uses `tea.Every`)
+- Also triggered on startup and when pressing `r`
 
 ## Important File Locations
 
 | File | Purpose |
 |------|---------|
-| `Makefile` | Build and deployment management |
-| `cmd/trelay/main.go` | CLI entry, handles direct connections, terminal restoration |
-| `internal/ui/tui/app.go` | Bubble Tea TUI application (no alt screen mode) |
-| `internal/ui/dialogs/password.go` | SSH password input dialog |
-| `internal/ui/dialogs/new_connection.go` | New connection configuration dialog |
-| `internal/ui/dialogs/edit_connection.go` | Edit connection dialog (largely mirrors new_connection.go) |
-| `internal/ui/dialogs/new_group.go` | New group creation dialog |
-| `internal/ui/dialogs/error.go` | Error display dialog with text wrapping |
-| `internal/protocol/session.go` | Session interface definition |
-| `internal/protocol/ssh/client.go` | SSH implementation |
-| `internal/protocol/rdp/client.go` | RDP implementation |
+| `cmd/trelay/main.go` | CLI entry, direct connections, terminal restoration |
+| `internal/ui/tui/app.go` | Bubble Tea TUI (no alt screen mode) |
+| `internal/protocol/ssh/pty_session.go` | SSH PTY session with Attach/Detach and persistent outputCh |
+| `internal/protocol/ssh/exec_adapter.go` | Adapts PTYSession to tea.ExecCommand, handles SIGWINCH |
+| `internal/protocol/ssh/client.go` | SSH client, getTermSize(), interactive session with SIGWINCH |
 | `internal/protocol/rdp/detector.go` | RDP tool detection logic |
-| `internal/protocol/rdp/freerdp_builder.go` | FreeRDP command builder |
 | `pkg/models/host.go` | Host model with `Validate()` and `GetPort()` |
 | `pkg/models/config.go` | Config model with grouping logic |
 
@@ -200,16 +181,14 @@ Hosts are organized into groups (plus "未分组" for ungrouped hosts):
 ## Notes
 
 - No test files exist yet (`go test ./...` will find nothing)
-- Passwords stored in plaintext in config file (password prompt added for security)
-- `InsecureIgnoreHostKey()` used for SSH - production should validate host keys
-- **TUI does NOT use alt screen mode** (see `app.go:Run()`) - this helps with terminal state issues
-- Terminal state restoration uses `stty sane` command - most reliable way to fix terminal after SSH sessions
-- All dialogs use `lipgloss.Place` for perfect horizontal and vertical centering
-- `EditConnectionDialog` and `NewConnectionDialog` share ~80% identical code (field definitions, visibility logic, navigation, rendering, validation) - keep them in sync when modifying
+- Passwords stored in plaintext in config file
+- `InsecureIgnoreHostKey()` used for SSH — production should validate host keys
+- **TUI does NOT use alt screen mode** (see `app.go:Run()`) — helps with terminal state issues
+- `EditConnectionDialog` and `NewConnectionDialog` share ~80% identical code — keep them in sync when modifying
 
 ### Platform-Specific Constants
 
-macOS and Linux use different ioctl constants. These are defined with build-tag-like conditional logic:
+macOS and Linux use different ioctl constants:
 
 - **TIOCGWINSZ** (get terminal size): macOS `0x40087468`, Linux `0x5413` — used in `internal/protocol/ssh/client.go`
 - **TCGETS/TCSETS** (get/set terminal attributes): macOS `0x40487413`/`0x80487414`, Linux `0x5401`/`0x5402` — used in `internal/ui/tui/app.go`
@@ -218,6 +197,8 @@ When adding new terminal ioctl calls, always handle both platforms.
 
 ### TUI Key Bindings (for understanding Update() logic in app.go)
 
-Normal mode: `q`/`Ctrl+C` quit, `/` search, `↑`/`↓`/`j`/`k` navigate, `Enter` connect, `Tab` switch group, `N` new connection, `G` new group, `E` edit connection, `r` reload config, `D`/`Delete` delete connection
+Normal mode: `q`/`Ctrl+C` quit, `/` search, `↑`/`↓`/`j`/`k` navigate, `Enter` connect, `Tab` switch group, `N` new connection, `G` new group, `E` edit connection, `r` reload config + refresh status, `D`/`Delete` delete connection, `B` background session list
 
 Search mode: character input, `Backspace` delete, `←`/`→` cursor, `Esc` exit search
+
+SSH session: `Ctrl+B` detach to background
