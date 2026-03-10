@@ -18,7 +18,9 @@ import (
 	"trelay/internal/ui/dialogs"
 	"trelay/pkg/models"
 
+	"github.com/charmbracelet/bubbles/paginator"
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"go.uber.org/zap"
@@ -67,18 +69,38 @@ type App struct {
 	quitting      bool
 
 	// 搜索相关字段
-	searchQuery  string
-	searchMode   bool
-	searchCursor int // 搜索框光标位置
+	searchQuery    string
+	searchMode     bool
+	searchBoxVisible bool // 搜索输入框持久可见（独立于 searchMode）
+
+	// 分页相关
+	paginator paginator.Model
+	pageSize  int // 每页显示数量，默认 10
+
+	// 命令输入框相关（Shift+: 触发）
+	commandMode  bool            // 是否处于命令模式
+	commandInput textinput.Model // 命令/搜索统一输入框
+
+	// 分组选择模式（:group 命令触发）
+	groupSelectMode   bool     // 是否处于分组选择模式
+	groupSelectCursor int      // 分组列表光标
+	groupList         []string // 所有分组列表
+	filteredGroupList    []string // 搜索过滤后的分组列表
+	groupSearchMode      bool     // 分组列表的搜索模式
+	groupSearchQuery     string   // 分组搜索关键词
+	groupSearchBoxVisible bool    // 分组搜索输入框持久可见
+
+	// 版本号
+	version string
 
 	// 状态刷新相关字段
 	lastStatusCheck time.Time
 
 	// 连接相关字段
-	connManager *protocol.Manager
-	connecting     bool           // 是否正在连接，防止重复触发
-	connectingHost string         // 正在连接的主机名（用于 spinner 显示）
-	spinner        spinner.Model  // 连接中的 spinner
+	connManager    *protocol.Manager
+	connecting     bool          // 是否正在连接，防止重复触发
+	connectingHost string        // 正在连接的主机名（用于 spinner 显示）
+	spinner        spinner.Model // 连接中的 spinner
 
 	// 新建连接对话框相关字段
 	showNewConnectionDialog bool                         // 是否显示新建连接对话框
@@ -123,7 +145,8 @@ func NewApp(logger *zap.Logger) (*App, error) {
 		selected:     0,
 		searchQuery:  "",
 		searchMode:   false,
-		searchCursor: 0,
+		version:      "1.0.0",
+		pageSize:     1, // 初始占位，View() 首次渲染时自动计算
 	}
 
 	// 初始化 spinner
@@ -131,6 +154,20 @@ func NewApp(logger *zap.Logger) (*App, error) {
 	s.Spinner = spinner.Dot
 	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("#00ff00"))
 	app.spinner = s
+
+	// 初始化 paginator
+	pg := paginator.New()
+	pg.Type = paginator.Dots
+	pg.PerPage = 1 // 初始占位，View() 首次渲染时自动计算
+	pg.ActiveDot = lipgloss.NewStyle().Foreground(lipgloss.Color("#00ff00")).Render("●")
+	pg.InactiveDot = lipgloss.NewStyle().Foreground(lipgloss.Color("#555555")).Render("○")
+	app.paginator = pg
+
+	// 初始化命令输入框
+	ti := textinput.New()
+	ti.Placeholder = "输入命令..."
+	ti.CharLimit = 50
+	app.commandInput = ti
 
 	// 初始化主机数据
 	app.refreshHosts()
@@ -182,6 +219,9 @@ func (a *App) refreshHosts() {
 	} else {
 		a.selected = 0
 	}
+
+	// 更新分页器
+	a.updatePaginator()
 }
 
 // applySearchFilter 应用搜索过滤
@@ -295,13 +335,33 @@ func (a *App) statusCheckCmd() tea.Cmd {
 // statusCheckMsg 状态检查消息
 type statusCheckMsg time.Time
 
-// toggleSearchMode 切换搜索模式
-func (a *App) toggleSearchMode() {
-	a.searchMode = !a.searchMode
-	if !a.searchMode {
-		a.searchQuery = ""
-		a.searchCursor = 0
-		a.applySearchFilter()
+// updatePaginator 更新分页器状态
+func (a *App) updatePaginator() {
+	a.paginator.SetTotalPages(len(a.filteredHosts))
+	if a.paginator.TotalPages > 0 && a.paginator.Page >= a.paginator.TotalPages {
+		a.paginator.Page = a.paginator.TotalPages - 1
+	}
+}
+
+// applyGroupSearchFilter 应用分组搜索过滤
+func (a *App) applyGroupSearchFilter() {
+	if a.groupSearchQuery == "" {
+		a.filteredGroupList = a.groupList
+	} else {
+		query := strings.ToLower(a.groupSearchQuery)
+		var filtered []string
+		for _, group := range a.groupList {
+			if strings.Contains(strings.ToLower(group), query) {
+				filtered = append(filtered, group)
+			}
+		}
+		a.filteredGroupList = filtered
+	}
+	// 确保光标不越界
+	if len(a.filteredGroupList) == 0 {
+		a.groupSelectCursor = 0
+	} else if a.groupSelectCursor >= len(a.filteredGroupList) {
+		a.groupSelectCursor = len(a.filteredGroupList) - 1
 	}
 }
 
@@ -857,75 +917,203 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case tea.KeyMsg:
-		// 搜索模式下的输入处理优先
-		if a.searchMode {
+		// 分组选择模式优先
+		if a.groupSelectMode {
+			if a.groupSearchMode {
+				// 分组搜索子模式
+				switch msg.Type {
+				case tea.KeyEsc:
+					// 退出搜索编辑，清空搜索词，恢复全部分组，输入框保留（空）
+					a.groupSearchMode = false
+					a.groupSearchQuery = ""
+					a.commandInput.Blur()
+					a.commandInput.Reset()
+					a.applyGroupSearchFilter()
+				case tea.KeyEnter:
+					// 退出搜索编辑，保留筛选结果，输入框保留（含搜索词）
+					a.groupSearchMode = false
+					a.commandInput.Blur()
+					if len(a.filteredGroupList) > 0 {
+						a.groupSelectCursor = 0
+					}
+				default:
+					var cmd tea.Cmd
+					a.commandInput, cmd = a.commandInput.Update(msg)
+					a.groupSearchQuery = a.commandInput.Value()
+					a.applyGroupSearchFilter()
+					return a, cmd
+				}
+				return a, nil
+			}
+
+			// 分组选择模式（非搜索）
 			switch msg.Type {
 			case tea.KeyEsc:
-				// 退出搜索模式
-				a.toggleSearchMode()
-			case tea.KeyBackspace, tea.KeyDelete:
-				// 删除字符
-				if len(a.searchQuery) > 0 && a.searchCursor > 0 {
-					a.searchQuery = a.searchQuery[:a.searchCursor-1] + a.searchQuery[a.searchCursor:]
-					a.searchCursor--
-					a.applySearchFilter()
-				}
-			case tea.KeyLeft:
-				// 左移光标
-				if a.searchCursor > 0 {
-					a.searchCursor--
-				}
-			case tea.KeyRight:
-				// 右移光标
-				if a.searchCursor < len(a.searchQuery) {
-					a.searchCursor++
-				}
-			case tea.KeyHome:
-				// 移动到开头
-				a.searchCursor = 0
-			case tea.KeyEnd:
-				// 移动到结尾
-				a.searchCursor = len(a.searchQuery)
+				a.groupSelectMode = false
+				a.commandMode = false
+				a.groupSearchMode = false
+				a.groupSearchQuery = ""
+				a.groupSearchBoxVisible = false
+				a.commandInput.Blur()
+				a.commandInput.Reset()
 			default:
-				// 普通字符输入
-				if msg.Runes != nil && len(msg.Runes) > 0 {
-					r := string(msg.Runes)
-					a.searchQuery = a.searchQuery[:a.searchCursor] + r + a.searchQuery[a.searchCursor:]
-					a.searchCursor += len(r)
-					a.applySearchFilter()
+				switch msg.String() {
+				case "up", "k":
+					if a.groupSelectCursor > 0 {
+						a.groupSelectCursor--
+					}
+				case "down", "j":
+					if len(a.filteredGroupList) > 0 && a.groupSelectCursor < len(a.filteredGroupList)-1 {
+						a.groupSelectCursor++
+					}
+				case "/":
+					a.groupSearchMode = true
+					a.groupSearchBoxVisible = true
+					if a.groupSearchQuery == "" {
+						a.commandInput.Reset()
+					}
+					a.commandInput.Placeholder = "搜索分组..."
+					a.commandInput.Focus()
+					return a, textinput.Blink
+				case "enter":
+					if len(a.filteredGroupList) > 0 && a.groupSelectCursor < len(a.filteredGroupList) {
+						a.currentGroup = a.filteredGroupList[a.groupSelectCursor]
+					}
+					a.groupSelectMode = false
+					a.commandMode = false
+					a.groupSearchMode = false
+					a.groupSearchQuery = ""
+					a.groupSearchBoxVisible = false
+					a.commandInput.Blur()
+					a.commandInput.Reset()
+					a.refreshHosts()
+				case "q":
+					a.groupSelectMode = false
+					a.commandMode = false
+					a.groupSearchMode = false
+					a.groupSearchQuery = ""
+					a.groupSearchBoxVisible = false
+					a.commandInput.Blur()
+					a.commandInput.Reset()
 				}
 			}
 			return a, nil
 		}
 
-		// 非搜索模式下的键盘事件处理
+		// 命令模式
+		if a.commandMode {
+			switch msg.Type {
+			case tea.KeyEsc:
+				a.commandMode = false
+				a.commandInput.Blur()
+				a.commandInput.Reset()
+			case tea.KeyEnter:
+				cmd := a.commandInput.Value()
+				if cmd == "group" {
+					a.groupSelectMode = true
+					a.groupSelectCursor = 0
+					a.groupList = a.groups
+					a.filteredGroupList = a.groups
+					a.groupSearchQuery = ""
+				}
+				// 不识别的命令：清除命令模式
+				if cmd != "group" {
+					a.commandMode = false
+					a.commandInput.Blur()
+					a.commandInput.Reset()
+				}
+			default:
+				var cmd tea.Cmd
+				a.commandInput, cmd = a.commandInput.Update(msg)
+				return a, cmd
+			}
+			return a, nil
+		}
+
+		// 主机搜索模式
+		if a.searchMode {
+			switch msg.Type {
+			case tea.KeyEsc:
+				// 退出搜索编辑，清空搜索词，恢复全部列表，输入框保留（空）
+				a.searchMode = false
+				a.searchQuery = ""
+				a.commandInput.Blur()
+				a.commandInput.Reset()
+				a.applySearchFilter()
+				a.updatePaginator()
+			case tea.KeyEnter:
+				// 退出搜索编辑，保留搜索结果，输入框保留（含搜索词）
+				a.searchMode = false
+				a.commandInput.Blur()
+				if len(a.filteredHosts) > 0 {
+					a.selected = 0
+					a.paginator.Page = 0
+				}
+			default:
+				var cmd tea.Cmd
+				a.commandInput, cmd = a.commandInput.Update(msg)
+				a.searchQuery = a.commandInput.Value()
+				a.applySearchFilter()
+				a.updatePaginator()
+				return a, cmd
+			}
+			return a, nil
+		}
+
+		// 普通模式下的键盘事件处理
 		switch msg.String() {
 		case "q", "ctrl+c":
-			// 退出程序
 			a.quitting = true
 			return a, tea.Quit
 
+		case ":":
+			// 进入命令模式
+			a.commandMode = true
+			a.commandInput.Reset()
+			a.commandInput.Placeholder = "输入命令..."
+			a.commandInput.Focus()
+			return a, textinput.Blink
+
 		case "/":
 			// 进入搜索模式
-			a.toggleSearchMode()
-			return a, nil
+			a.searchMode = true
+			a.searchBoxVisible = true
+			if a.searchQuery == "" {
+				a.commandInput.Reset()
+			}
+			a.commandInput.Placeholder = "搜索主机..."
+			a.commandInput.Focus()
+			return a, textinput.Blink
 
 		case "up", "k":
-			// 上移选择
 			if a.selected > 0 {
 				a.selected--
+				a.paginator.Page = a.selected / a.pageSize
 			}
 			return a, nil
 
 		case "down", "j":
-			// 下移选择
 			if len(a.filteredHosts) > 0 && a.selected < len(a.filteredHosts)-1 {
 				a.selected++
+				a.paginator.Page = a.selected / a.pageSize
+			}
+			return a, nil
+
+		case "left", "h":
+			if a.paginator.Page > 0 {
+				a.paginator.Page--
+				a.selected = a.paginator.Page * a.pageSize
+			}
+			return a, nil
+
+		case "right", "l":
+			if a.paginator.Page < a.paginator.TotalPages-1 {
+				a.paginator.Page++
+				a.selected = a.paginator.Page * a.pageSize
 			}
 			return a, nil
 
 		case "enter":
-			// 直接连接到选中的主机
 			if len(a.filteredHosts) > 0 && a.selected < len(a.filteredHosts) && !a.connecting {
 				host := a.filteredHosts[a.selected]
 
@@ -933,30 +1121,25 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if session, ok := a.connManager.GetSession(host.Name); ok {
 					if ptySession, ok := session.(*sshpkg.PTYSession); ok {
 						if ptySession.IsConnected() && !ptySession.IsAttached() && ptySession.IsAlive() {
-							// 复用已有的后台会话
 							a.connecting = true
-							return a, a.attachSSHSession(ptySession, true) // 从后台恢复
+							return a, a.attachSSHSession(ptySession, true)
 						}
 					}
 				}
 
-				a.connecting = true // 设置连接标志，防止重复触发
-			a.connectingHost = host.Name
+				a.connecting = true
+				a.connectingHost = host.Name
 
-				// 检查是否是SSH协议且没有配置密码或密钥
 				if host.Protocol == "ssh" && host.Password == "" && host.KeyPath == "" {
-					// 显示密码输入对话框
 					a.showPasswordDialog = true
 					a.passwordDialog = dialogs.NewPasswordDialog(host, a.width, a.height)
 				} else {
-					// 直接执行连接
 					return a, a.executeConnection(host)
 				}
 			}
 			return a, nil
 
 		case "tab":
-			// 切换分组
 			if len(a.groups) > 1 {
 				currentIndex := -1
 				for i, group := range a.groups {
@@ -974,7 +1157,6 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 
 		case "N", "n":
-			// 显示新建连接对话框
 			a.showNewConnectionDialog = true
 			var groupNames []string
 			for _, group := range a.config.Groups {
@@ -984,13 +1166,11 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 
 		case "G", "g":
-			// 显示新建分组对话框
 			a.showNewGroupDialog = true
 			a.newGroupDialog = dialogs.NewNewGroupDialog(a.width, a.height)
 			return a, nil
 
 		case "B", "b":
-			// 显示后台会话列表
 			bgSessions := a.connManager.GetBackgroundSessions()
 			if len(bgSessions) > 0 {
 				a.showSessionList = true
@@ -999,12 +1179,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 
 		case "E", "e":
-			// 显示编辑连接对话框
 			if len(a.filteredHosts) > 0 && a.selected < len(a.filteredHosts) {
 				host := a.filteredHosts[a.selected]
-				// 查找主机所属分组
 				hostGroup := a.findHostGroup(host.Name)
-				// 获取所有分组名称
 				var groupNames []string
 				for _, group := range a.config.Groups {
 					groupNames = append(groupNames, group.Name)
@@ -1015,7 +1192,6 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 
 		case "r":
-			// 刷新配置并异步刷新主机在线状态
 			if cfg, err := a.configMgr.Load(); err == nil {
 				a.config = cfg
 				a.refreshHosts()
@@ -1024,45 +1200,6 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.logger.Error("刷新配置失败", zap.Error(err))
 			}
 			return a, a.checkHostStatusAsync()
-
-		default:
-			// 搜索模式下的输入处理
-			if a.searchMode {
-				switch msg.Type {
-				case tea.KeyBackspace, tea.KeyDelete:
-					// 删除字符
-					if len(a.searchQuery) > 0 && a.searchCursor > 0 {
-						a.searchQuery = a.searchQuery[:a.searchCursor-1] + a.searchQuery[a.searchCursor:]
-						a.searchCursor--
-						a.applySearchFilter()
-					}
-				case tea.KeyLeft:
-					// 左移光标
-					if a.searchCursor > 0 {
-						a.searchCursor--
-					}
-				case tea.KeyRight:
-					// 右移光标
-					if a.searchCursor < len(a.searchQuery) {
-						a.searchCursor++
-					}
-				case tea.KeyHome:
-					// 移动到开头
-					a.searchCursor = 0
-				case tea.KeyEnd:
-					// 移动到结尾
-					a.searchCursor = len(a.searchQuery)
-				default:
-					// 普通字符输入
-					if msg.Runes != nil && len(msg.Runes) > 0 {
-						r := string(msg.Runes)
-						a.searchQuery = a.searchQuery[:a.searchCursor] + r + a.searchQuery[a.searchCursor:]
-						a.searchCursor += len(r)
-						a.applySearchFilter()
-					}
-				}
-				return a, nil
-			}
 		}
 	}
 
@@ -1124,89 +1261,331 @@ func (a *App) View() string {
 		return "再见！\n"
 	}
 
-	var content string
+	// 1. 头部（信息区 + 快捷键区）
+	header := a.renderHeader()
 
-	// 标题
-	title := a.renderTitle()
-	content += title + "\n\n"
-
-	// 计算底部固定内容的高度
-	bottomContentHeight := 3 // 状态栏 + 帮助信息 + 分隔行
-
-	// 计算主机列表可用高度
-	titleHeight := 1 + strings.Count(title, "\n") // 标题行数（包含换行）
-	availableHeight := a.height - titleHeight - bottomContentHeight
-
-	// 渲染主机列表（带高度限制）
-	hostList := a.renderHostListWithHeight(availableHeight)
-	content += hostList + "\n"
-
-	// 填充剩余空间（如果需要）
-	renderedHostHeight := 1 + strings.Count(hostList, "\n") // 主机列表行数
-	if renderedHostHeight < availableHeight {
-		content += strings.Repeat("\n", availableHeight-renderedHostHeight)
+	// 2. 命令/搜索输入框（条件显示）
+	var cmdInput string
+	if a.commandMode || a.searchMode || a.groupSearchMode || a.searchBoxVisible || a.groupSearchBoxVisible {
+		cmdInput = a.renderCommandInput()
 	}
 
-	// 状态栏（固定在底部）
+	// 4. 状态栏（先渲染，以便计算剩余高度给主内容区）
 	statusBar := a.renderStatusBar()
-	content += statusBar
 
-	// 帮助信息（固定在底部）
-	help := a.renderHelp()
-	content += "\n" + help
-
-	return content
-}
-
-// renderTitle 渲染标题
-func (a *App) renderTitle() string {
-	var titleContent string
-
-	// 主标题
-	titleStyle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("#00ff00")).
-		Padding(0, 1)
-
-	title := "远程连接管理器"
-	if a.currentGroup != "" {
-		title += " - " + a.currentGroup
+	// 计算主内容区可用高度，使主机列表边框撑满中间区域
+	contentHeight := a.height - lipgloss.Height(header) - lipgloss.Height(statusBar)
+	if cmdInput != "" {
+		contentHeight -= lipgloss.Height(cmdInput)
 	}
-	titleContent = titleStyle.Render(title)
-
-	// 搜索框
-	if a.searchMode || a.searchQuery != "" {
-		titleContent += "\n" + a.renderSearchBox()
+	if contentHeight < 3 {
+		contentHeight = 3
 	}
 
-	// 边框样式
-	style := lipgloss.NewStyle().
-		BorderStyle(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("#00aa00")).
-		Padding(0, 1).
-		Width(a.width - 2)
+	// 动态计算每页显示条数，使主机列表刚好铺满可用区域
+	// innerHeight = contentHeight - 2（列表边框上下各1行）
+	// 固定行数：表头1 + 分隔线1 = 2
+	innerHeight := contentHeight - 2
+	fixedLines := 2 // 表头 + 分隔线
+	newPageSize := innerHeight - fixedLines
+	if newPageSize < 1 {
+		newPageSize = 1
+	}
+	// 如果需要分页，预留2行给分页指示器（空行+dots）
+	totalHosts := len(a.filteredHosts)
+	if totalHosts > 0 && totalHosts > newPageSize {
+		newPageSize = innerHeight - fixedLines - 2
+		if newPageSize < 1 {
+			newPageSize = 1
+		}
+	}
+	if newPageSize != a.pageSize {
+		a.pageSize = newPageSize
+		a.paginator.PerPage = newPageSize
+		a.updatePaginator()
+		// 同步当前选中项所在页
+		if a.pageSize > 0 {
+			a.paginator.Page = a.selected / a.pageSize
+		}
+		// 重新渲染状态栏以反映新的分页信息
+		statusBar = a.renderStatusBar()
+	}
 
-	return style.Render(titleContent)
-}
-
-// renderSearchBox 渲染搜索框
-func (a *App) renderSearchBox() string {
-	searchLabel := "搜索: "
-	cursor := "█"
-
-	var displayText string
-	if a.searchCursor >= len(a.searchQuery) {
-		displayText = a.searchQuery + cursor
+	// 3. 主内容区（传入可用高度）
+	var content string
+	if a.groupSelectMode {
+		content = a.renderGroupSelectWithHeight(contentHeight)
 	} else {
-		displayText = a.searchQuery[:a.searchCursor] + cursor + a.searchQuery[a.searchCursor:]
+		content = a.renderHostListWithHeight(contentHeight)
 	}
 
-	searchStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#00ff00")).
-		Background(lipgloss.Color("#003300")).
-		Padding(0, 1)
+	var sections []string
+	sections = append(sections, header)
+	if cmdInput != "" {
+		sections = append(sections, cmdInput)
+	}
+	sections = append(sections, content)
+	sections = append(sections, statusBar)
 
-	return searchStyle.Render(searchLabel + displayText)
+	return lipgloss.JoinVertical(lipgloss.Left, sections...)
+}
+
+// renderHeader 渲染头部（信息区 + 快捷键区）
+func (a *App) renderHeader() string {
+	// totalWidth = a.width，两个边框盒子并排总宽度 = a.width
+	// 每个盒子: Width(X) 设置内容宽度 X，渲染宽度 = X + 2（左右边框各1）
+	// info渲染宽度 = infoInner + 2, shortcut渲染宽度 = shortcutInner + 2
+	// 总渲染宽度 = infoInner + shortcutInner + 4 = a.width
+	// 所以 infoInner + shortcutInner = a.width - 4
+	totalInner := a.width - 4
+	if totalInner < 20 {
+		totalInner = 20
+	}
+	infoInner := totalInner * 40 / 100
+	shortcutInner := totalInner - infoInner
+
+	// 信息区内容
+	groupName := a.currentGroup
+	if groupName == "" {
+		groupName = "未分组"
+	}
+	infoLines := []string{
+		fmt.Sprintf(" Trelay v%s", a.version),
+		fmt.Sprintf(" 分组: %s", groupName),
+		fmt.Sprintf(" 主机: %d", len(a.filteredHosts)),
+	}
+	infoContent := strings.Join(infoLines, "\n")
+
+	// 快捷键区内容（自适应列数，<> 包围键名）
+	type shortcut struct {
+		key  string
+		desc string
+	}
+	shortcuts := []shortcut{
+		{"↑↓", "选择"},
+		{"Enter", "连接"},
+		{"←→", "翻页"},
+		{"/", "搜索"},
+		{":", "命令"},
+		{"N", "新建"},
+		{"E", "编辑"},
+		{"B", "后台会话"},
+		{"R", "刷新"},
+		{"G", "新建分组"},
+		{"D", "删除"},
+		{"Ctrl+B", "挂起连接"},
+		{"Q", "退出"},
+	}
+
+	keyStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#00ff00"))
+	descStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#888888"))
+
+	// 计算每个条目的渲染宽度，找出最宽的作为列宽基准
+	maxEntryW := 0
+	for _, s := range shortcuts {
+		plain := fmt.Sprintf(" <%s> %s", s.key, s.desc)
+		w := displayWidth(plain)
+		if w > maxEntryW {
+			maxEntryW = w
+		}
+	}
+	colW := maxEntryW + 2 // 列间距
+	if colW < 14 {
+		colW = 14
+	}
+
+	// 根据可用宽度自动计算列数
+	availW := shortcutInner
+	numCols := availW / colW
+	if numCols < 2 {
+		numCols = 2
+	}
+	// 重新平均分配列宽
+	colW = availW / numCols
+
+	// 计算行数
+	numRows := (len(shortcuts) + numCols - 1) / numCols
+
+	var shortcutLines []string
+	for r := 0; r < numRows; r++ {
+		var line string
+		for c := 0; c < numCols; c++ {
+			idx := c*numRows + r
+			if idx < len(shortcuts) {
+				s := shortcuts[idx]
+				entry := fmt.Sprintf(" %s %s", keyStyle.Render("<"+s.key+">"), descStyle.Render(s.desc))
+				entryW := displayWidth(stripANSI(entry))
+				pad := colW - entryW
+				if pad < 0 {
+					pad = 0
+				}
+				line += entry + strings.Repeat(" ", pad)
+			}
+		}
+		shortcutLines = append(shortcutLines, line)
+	}
+	shortcutContent := strings.Join(shortcutLines, "\n")
+
+	infoStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#00aa00")).
+		Foreground(lipgloss.Color("#00ff00")).
+		Width(infoInner).
+		Height(numRows)
+
+	shortcutStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#00aa00")).
+		Width(shortcutInner).
+		Height(numRows)
+
+	return lipgloss.JoinHorizontal(lipgloss.Top,
+		infoStyle.Render(infoContent),
+		shortcutStyle.Render(shortcutContent),
+	)
+}
+
+// renderCommandInput 渲染命令/搜索输入框
+func (a *App) renderCommandInput() string {
+	prefix := ""
+	if a.commandMode && !a.groupSelectMode {
+		prefix = ":"
+	} else if a.searchMode || a.groupSearchMode || a.searchBoxVisible || a.groupSearchBoxVisible {
+		prefix = "/"
+	}
+
+	prefixStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#00ff00")).
+		Bold(true)
+
+	inputStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#00aa00")).
+		Width(a.width - 4)
+
+	return inputStyle.Render(prefixStyle.Render(prefix) + a.commandInput.View())
+}
+
+// renderGroupSelectWithHeight 渲染分组选择列表（指定高度撑满）
+func (a *App) renderGroupSelectWithHeight(height int) string {
+	if len(a.filteredGroupList) == 0 {
+		style := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#888888")).
+			Italic(true).
+			Width(a.width - 8).
+			Align(lipgloss.Center)
+
+		message := "无匹配分组"
+
+		innerHeight := height - 2
+		if innerHeight < 1 {
+			innerHeight = 1
+		}
+		listStyle := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("#00aa00")).
+			Width(a.width - 2).
+			Height(innerHeight)
+		return listStyle.Render(style.Render(message))
+	}
+
+	// 列宽计算：选中(2) + 分组名称(60%) + 主机数量(剩余)
+	tableWidth := a.width - 6 // 边框2 + 左右padding各1
+	colSpacing := 2
+	selectW := 2
+	nameW := (tableWidth - selectW - colSpacing*2) * 60 / 100
+	countW := tableWidth - selectW - nameW - colSpacing*2
+
+	// 表头
+	headers := []string{" ", "分组名称", "主机数量"}
+	widths := []int{selectW, nameW, countW}
+
+	var headerBuilder strings.Builder
+	for i, header := range headers {
+		headerBuilder.WriteString(header)
+		padding := widths[i] - displayWidth(header)
+		if padding > 0 {
+			headerBuilder.WriteString(strings.Repeat(" ", padding))
+		}
+		if i < len(headers)-1 {
+			headerBuilder.WriteString(strings.Repeat(" ", colSpacing))
+		}
+	}
+	headerStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#00ff00")).
+		Bold(true).
+		Background(lipgloss.Color("#003300"))
+
+	var list string
+	list += headerStyle.Render(headerBuilder.String()) + "\n"
+
+	// 分隔线
+	sepWidth := selectW + nameW + countW + colSpacing*2
+	separatorStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#00aa00"))
+	list += separatorStyle.Render(strings.Repeat("─", sepWidth)) + "\n"
+
+	// 数据行
+	for i, group := range a.filteredGroupList {
+		selected := i == a.groupSelectCursor
+
+		indicator := " "
+		if selected {
+			indicator = "●"
+		}
+
+		hostCount := 0
+		if hosts, ok := a.grouped[group]; ok {
+			hostCount = len(hosts)
+		}
+		countText := fmt.Sprintf("%d", hostCount)
+
+		// 截断分组名
+		groupName := truncateByDisplayWidth(group, nameW)
+
+		var rowBuilder strings.Builder
+		// 选中标记
+		rowBuilder.WriteString(indicator)
+		if p := selectW - displayWidth(indicator); p > 0 {
+			rowBuilder.WriteString(strings.Repeat(" ", p))
+		}
+		rowBuilder.WriteString(strings.Repeat(" ", colSpacing))
+		// 分组名称
+		rowBuilder.WriteString(groupName)
+		if p := nameW - displayWidth(groupName); p > 0 {
+			rowBuilder.WriteString(strings.Repeat(" ", p))
+		}
+		rowBuilder.WriteString(strings.Repeat(" ", colSpacing))
+		// 主机数量
+		rowBuilder.WriteString(countText)
+		if p := countW - displayWidth(countText); p > 0 {
+			rowBuilder.WriteString(strings.Repeat(" ", p))
+		}
+
+		var style lipgloss.Style
+		if selected {
+			style = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#000000")).
+				Background(lipgloss.Color("#00ff00")).
+				Bold(true)
+		} else {
+			style = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#00ff00"))
+		}
+		list += style.Render(rowBuilder.String()) + "\n"
+	}
+
+	// 边框包裹，Height 撑满
+	innerHeight := height - 2
+	if innerHeight < 1 {
+		innerHeight = 1
+	}
+	listStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#00aa00")).
+		Width(a.width - 2).
+		Height(innerHeight)
+
+	return listStyle.Render(list)
 }
 
 // displayWidth 计算字符串在终端中的显示宽度（中文字符2，英文字符1）
@@ -1384,27 +1763,37 @@ func (a *App) renderTableHeader() string {
 	return headerStyle.Render(headerBuilder.String())
 }
 
-// renderHostList 渲染主机列表
-func (a *App) renderHostList() string {
+// renderHostListWithHeight 渲染主机列表（带分页，指定高度撑满）
+func (a *App) renderHostListWithHeight(height int) string {
 	if len(a.filteredHosts) == 0 {
 		style := lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#888888")).
 			Italic(true).
-			Width(a.width - 4).
+			Width(a.width - 8).
 			Align(lipgloss.Center)
 
 		message := "没有可用的主机配置"
 		if a.searchQuery != "" {
 			message = fmt.Sprintf("没有找到匹配 '%s' 的主机", a.searchQuery)
 		}
-		return style.Render(message)
+
+		innerHeight := height - 2
+		if innerHeight < 1 {
+			innerHeight = 1
+		}
+		listStyle := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("#00aa00")).
+			Width(a.width - 2).
+			Height(innerHeight)
+		return listStyle.Render(style.Render(message))
 	}
 
 	var list string
 	// 添加表头
 	list += a.renderTableHeader() + "\n"
 
-	// 添加分隔线（与表格宽度匹配）
+	// 添加分隔线
 	widths, colSpacing := a.getColumnWidths()
 	tableWidth := 0
 	for _, w := range widths {
@@ -1416,12 +1805,50 @@ func (a *App) renderHostList() string {
 		Foreground(lipgloss.Color("#00aa00"))
 	list += separatorStyle.Render(strings.Repeat("─", tableWidth)) + "\n"
 
-	for i, host := range a.filteredHosts {
-		item := a.renderHostItem(host, i == a.selected)
+	// 通过 paginator 获取当前页数据
+	start, end := a.paginator.GetSliceBounds(len(a.filteredHosts))
+	pageHosts := a.filteredHosts[start:end]
+
+	for i, host := range pageHosts {
+		globalIndex := start + i
+		item := a.renderHostItem(host, globalIndex == a.selected)
 		list += item + "\n"
 	}
 
-	return list
+	// 用边框包裹列表，Height 撑满剩余空间（减去边框上下各1行）
+	innerHeight := height - 2
+	if innerHeight < 1 {
+		innerHeight = 1
+	}
+
+	// 计算已用行数，插入空行将分页指示器推到列表底部
+	// list 末尾已有 "\n"，所以 gap 个 "\n" 会产生 gap+1 个空行，需要减1修正
+	contentLines := 2 + len(pageHosts) // 表头1 + 分隔线1 + 主机行数
+	paginatorLines := 0
+	if a.paginator.TotalPages > 1 {
+		paginatorLines = 2 // 空行1 + dots 1
+	}
+	gap := innerHeight - contentLines - paginatorLines - 1 // -1 修正尾部 \n
+	if gap > 0 {
+		list += strings.Repeat("\n", gap)
+	}
+
+	// 分页指示器固定在列表最底部（仅当有多页时显示）
+	if a.paginator.TotalPages > 1 {
+		paginatorStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#00aa00")).
+			Width(a.width - 8).
+			Align(lipgloss.Center)
+		list += "\n" + paginatorStyle.Render(a.paginator.View())
+	}
+
+	listStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#00aa00")).
+		Width(a.width - 2).
+		Height(innerHeight)
+
+	return listStyle.Render(list)
 }
 
 // renderHostItem 渲染单个主机项
@@ -1590,24 +2017,45 @@ func stripANSI(s string) string {
 	return result.String()
 }
 
-// renderStatusBar 渲染状态栏
+// renderStatusBar 渲染状态栏（三栏布局 + 边框）
 func (a *App) renderStatusBar() string {
-	// 连接状态
-	totalHosts := len(a.filteredHosts)
-	selectedIndex := a.selected + 1
-	bgCount := a.connManager.GetBackgroundCount()
-
-	status := fmt.Sprintf("%d/%d hosts | [↑/↓] 选择 | [Enter] 连接", selectedIndex, totalHosts)
-	if bgCount > 0 {
-		status += fmt.Sprintf(" | 后台: %d", bgCount)
+	totalHosts := len(a.config.Profiles)
+	totalGroups := len(a.config.Groups)
+	currentPage := a.paginator.Page + 1
+	totalPages := a.paginator.TotalPages
+	if totalPages == 0 {
+		totalPages = 1
+		currentPage = 1
 	}
 
-	statusStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#00aa00")).
-		Width(a.width - 4).
-		Align(lipgloss.Center)
+	totalWidth := a.width - 4 // 边框占用
+	hostWidth := totalWidth * 25 / 100
+	groupWidth := totalWidth * 25 / 100
+	pageWidth := totalWidth - hostWidth - groupWidth
 
-	return statusStyle.Render(status)
+	hostText := fmt.Sprintf("主机: %d", totalHosts)
+	groupText := fmt.Sprintf("分组: %d", totalGroups)
+	pageText := fmt.Sprintf("页: %d/%d (每页%d条)", currentPage, totalPages, a.pageSize)
+
+	bgCount := a.connManager.GetBackgroundCount()
+	if bgCount > 0 {
+		pageText += fmt.Sprintf("  后台: %d", bgCount)
+	}
+
+	textStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#888888"))
+
+	hostCol := lipgloss.NewStyle().Width(hostWidth).Align(lipgloss.Left).Render(textStyle.Render(hostText))
+	groupCol := lipgloss.NewStyle().Width(groupWidth).Align(lipgloss.Left).Render(textStyle.Render(groupText))
+	pageCol := lipgloss.NewStyle().Width(pageWidth).Align(lipgloss.Right).Render(textStyle.Render(pageText))
+
+	inner := lipgloss.JoinHorizontal(lipgloss.Top, hostCol, groupCol, pageCol)
+
+	barStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#00aa00")).
+		Width(a.width - 2)
+
+	return barStyle.Render(inner)
 }
 
 // renderConnectingView 渲染连接中的 loading 视图
@@ -1647,39 +2095,6 @@ func (a *App) renderConnectingView() string {
 		)
 	}
 	return dialogContent
-}
-
-// renderHostListWithHeight 渲染带高度限制的主机列表
-func (a *App) renderHostListWithHeight(maxHeight int) string {
-	fullList := a.renderHostList()
-	lines := strings.Split(fullList, "\n")
-
-	// 如果列表高度不超过最大高度，直接返回
-	if len(lines) <= maxHeight {
-		return fullList
-	}
-
-	// 计算可显示的主机项目数
-	// 标题 + 分隔线 + 主机项目数 + 最后一行空行
-	headerLines := 2 // 标题 + 分隔线
-	if maxHeight <= headerLines {
-		return strings.Join(lines[:maxHeight], "\n")
-	}
-
-	maxItems := maxHeight - headerLines
-	return strings.Join(lines[:headerLines+maxItems], "\n")
-}
-
-// renderHelp 渲染帮助信息
-func (a *App) renderHelp() string {
-	helpStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#888888")).
-		Italic(true).
-		Width(a.width - 4).
-		Align(lipgloss.Center)
-	helpText := "键盘: ↑↓ 选择 | Enter 连接 | Tab 分组 | / 搜索 | R 刷新 | N 新建 | E 编辑 | G 新建分组 | B 后台会话 | Q 退出"
-
-	return helpStyle.Render(helpText)
 }
 
 // renderSessionList 渲染后台会话列表弹窗
