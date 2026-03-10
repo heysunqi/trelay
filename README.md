@@ -37,7 +37,8 @@
 ### 外部工具支持
 - **RDP**：Linux 优先使用 Remmina，macOS 使用 FreeRDP
 - **VNC**：Linux 使用 Remmina/TigerVNC，macOS 使用系统屏幕共享
-<img width="1308" height="854" alt="image" src="https://github.com/user-attachments/assets/28b0afd0-aa58-4948-9385-4a149e04e4d3" />
+<img width="1512" height="949" alt="image" src="https://github.com/user-attachments/assets/97e13140-cd61-4e0c-bf23-321aa09bbb38" />
+
 
 ## 技术栈
 
