@@ -18,6 +18,7 @@ import (
 	"trelay/internal/ui/dialogs"
 	"trelay/pkg/models"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"go.uber.org/zap"
@@ -75,7 +76,9 @@ type App struct {
 
 	// 连接相关字段
 	connManager *protocol.Manager
-	connecting  bool // 是否正在连接，防止重复触发
+	connecting     bool           // 是否正在连接，防止重复触发
+	connectingHost string         // 正在连接的主机名（用于 spinner 显示）
+	spinner        spinner.Model  // 连接中的 spinner
 
 	// 新建连接对话框相关字段
 	showNewConnectionDialog bool                         // 是否显示新建连接对话框
@@ -122,6 +125,12 @@ func NewApp(logger *zap.Logger) (*App, error) {
 		searchMode:   false,
 		searchCursor: 0,
 	}
+
+	// 初始化 spinner
+	s := spinner.New()
+	s.Spinner = spinner.Dot
+	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("#00ff00"))
+	app.spinner = s
 
 	// 初始化主机数据
 	app.refreshHosts()
@@ -301,7 +310,7 @@ func (a *App) executeConnection(host *models.Host) tea.Cmd {
 	switch host.Protocol {
 	case "ssh":
 		// SSH 使用进程内 PTY 模式，支持后台化
-		return a.executeSSHConnection(host)
+		return tea.Batch(a.executeSSHConnection(host), a.spinner.Tick)
 	case "rdp", "vnc":
 		// RDP/VNC 仍使用 syscall.Exec 模式
 		a.executeExternalConnection(host)
@@ -447,6 +456,7 @@ func (a *App) Init() tea.Cmd {
 		tea.WindowSize(),         // 获取终端尺寸命令
 		a.checkHostStatusAsync(), // 异步状态检查
 		a.statusCheckCmd(),       // 定时状态检查
+		a.spinner.Tick,           // spinner 动画
 	)
 }
 
@@ -806,11 +816,18 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.lastStatusCheck = time.Now()
 		return a, nil
 
+	case spinner.TickMsg:
+		if a.connecting {
+			var cmd tea.Cmd
+			a.spinner, cmd = a.spinner.Update(msg)
+			return a, cmd
+		}
+
 	case sshConnectResultMsg:
 		// SSH 异步连接完成
 		a.connecting = false
+		a.connectingHost = ""
 		if msg.err != nil {
-			a.logger.Error("SSH连接失败", zap.Error(msg.err))
 			a.showErrorDialog = true
 			a.errorDialog = dialogs.NewErrorDialog(msg.err.Error(), a.width, a.height)
 			return a, nil
@@ -924,6 +941,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 
 				a.connecting = true // 设置连接标志，防止重复触发
+			a.connectingHost = host.Name
 
 				// 检查是否是SSH协议且没有配置密码或密钥
 				if host.Protocol == "ssh" && host.Password == "" && host.KeyPath == "" {
@@ -1063,6 +1081,11 @@ func (a *App) View() string {
 		var dialogView string
 		dialogView += a.errorDialog.View()
 		return dialogView
+	}
+
+	// 连接中 loading 状态
+	if a.connecting && a.connectingHost != "" {
+		return a.renderConnectingView()
 	}
 
 	// 密码输入对话框优先显示（即使未初始化完成）
@@ -1587,6 +1610,45 @@ func (a *App) renderStatusBar() string {
 	return statusStyle.Render(status)
 }
 
+// renderConnectingView 渲染连接中的 loading 视图
+func (a *App) renderConnectingView() string {
+	dialogStyle := lipgloss.NewStyle().
+		BorderStyle(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#00ff00")).
+		Padding(1, 2).
+		Background(lipgloss.Color("#001a00"))
+
+	titleStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#00ff00")).
+		Bold(true)
+
+	contentStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#00cc00"))
+
+	hintStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#888888")).
+		Italic(true)
+
+	var content strings.Builder
+	content.WriteString(titleStyle.Render("正在连接"))
+	content.WriteString("\n\n")
+	content.WriteString(a.spinner.View())
+	content.WriteString(contentStyle.Render(" " + a.connectingHost))
+	content.WriteString("\n\n")
+	content.WriteString(hintStyle.Render("请等待..."))
+
+	dialogContent := dialogStyle.Render(content.String())
+
+	if a.width > 0 && a.height > 0 {
+		return lipgloss.Place(
+			a.width, a.height,
+			lipgloss.Center, lipgloss.Center,
+			dialogContent,
+		)
+	}
+	return dialogContent
+}
+
 // renderHostListWithHeight 渲染带高度限制的主机列表
 func (a *App) renderHostListWithHeight(maxHeight int) string {
 	fullList := a.renderHostList()
@@ -1701,9 +1763,9 @@ func Run(logger *zap.Logger) error {
 	}
 
 	// 创建Bubble Tea程序
-	// 不使用备用屏幕，避免退出时终端状态混乱
 	p := tea.NewProgram(
 		app,
+		tea.WithAltScreen(),
 	)
 
 	// 运行程序
