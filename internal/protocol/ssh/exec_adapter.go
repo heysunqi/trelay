@@ -10,6 +10,10 @@ import (
 	"golang.org/x/term"
 )
 
+// lastAttachedHostID 记录上次 attach 到终端的主机 ID
+// 用于判断是否需要清屏：切换主机时清屏，恢复同一主机时保留屏幕内容
+var lastAttachedHostID string
+
 // ExecAdapter 将 PTYSession 适配为 tea.ExecCommand 接口
 // 实现 Run() / SetStdin() / SetStdout() / SetStderr()
 type ExecAdapter struct {
@@ -49,11 +53,12 @@ func (e *ExecAdapter) Run() error {
 		return fmt.Errorf("stdin/stdout 未设置")
 	}
 
-	if !e.isResume {
-		// 首次连接：清屏并移动光标到左上角
-		// 这样 SSH shell 首次连接时内容会展示在屏幕最顶端
+	// 仅在切换到不同主机时清屏，恢复同一主机时保留屏幕内容
+	hostID := e.Session.GetHostID()
+	if hostID != lastAttachedHostID {
 		fmt.Print("\033[2J\033[H")
 	}
+	lastAttachedHostID = hostID
 
 	// 重要：Bubble Tea 的 p.input 可能是 cancelreader，在 ReleaseTerminal 后被取消
 	// 我们需要直接使用 os.Stdin 和 os.Stdout，而不是通过 cancelreader
