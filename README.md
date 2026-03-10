@@ -1,7 +1,7 @@
 # Trelay - 远程连接管理器
 
 一个基于终端的远程连接管理工具，支持 SSH、RDP、VNC 协议，采用复古终端界面风格。
-<img width="1308" height="854" alt="image" src="https://github.com/user-attachments/assets/4db7e4c5-9ed7-44d6-828a-3cd601e49c04" />
+<img width="1512" height="949" alt="image" src="https://github.com/user-attachments/assets/c9bcf97a-bdd7-4a07-836f-5c815efaaa23" />
 
 ## 功能特性
 
@@ -18,7 +18,8 @@
 <img width="1308" height="854" alt="image" src="https://github.com/user-attachments/assets/e2788543-9850-43c2-b3f9-8bcbb367034a" />
 <img width="1308" height="854" alt="image" src="https://github.com/user-attachments/assets/64c37e50-772c-4f6d-a25f-c4b6720363cf" />
 <img width="1308" height="854" alt="image" src="https://github.com/user-attachments/assets/21815b8d-415b-4d92-9846-5d1dcf59cbf7" />
-<img width="1308" height="854" alt="image" src="https://github.com/user-attachments/assets/f1f39923-3373-4f1b-9030-6cea5ae758cb" />
+<img width="1512" height="949" alt="image" src="https://github.com/user-attachments/assets/344ab523-b6d8-4378-aa1b-6936417ab50a" />
+
 
 ### 连接方式
 - **直接连接**：支持命令行参数直接连接（绕过 TUI）
