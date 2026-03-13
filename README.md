@@ -34,6 +34,14 @@
 - **后台会话管理**：查看、切回或断开后台会话
 <img width="1308" height="854" alt="image" src="https://github.com/user-attachments/assets/d3efa62f-12bd-4387-aa43-dc1a978549df" />
 
+### SSH 密钥管理
+- **灵活的密钥配置**：
+  - 支持使用已有密钥文件路径
+  - 支持直接粘贴密钥内容，自动保存到本地
+- **自动密钥托管**：粘贴的密钥自动保存到 `~/.config/trelay/keys/` 目录
+- **密钥文件命名**：`<主机名>_<随机字符串>_key.pem` 格式，便于识别
+- **安全存储**：密钥文件权限自动设置为 `0600`，目录权限 `0700`
+
 ### 外部工具支持
 - **RDP**：Linux 优先使用 Remmina，macOS 使用 FreeRDP
 - **VNC**：Linux 使用 Remmina/TigerVNC，macOS 使用系统屏幕共享
@@ -93,6 +101,7 @@ trelay/
 ├── cmd/trelay/          # 程序入口
 ├── internal/
 │   ├── config/         # 配置管理
+│   ├── keymgr/         # 密钥文件管理
 │   ├── protocol/       # 协议实现
 │   │   ├── ssh/        # SSH 协议
 │   │   ├── rdp/        # RDP 协议
@@ -161,6 +170,17 @@ trelay/
       "password": "your_password"
     },
     {
+      "name": "db-server",
+      "description": "数据库服务器",
+      "protocol": "ssh",
+      "host": "192.168.1.101",
+      "port": 22,
+      "username": "admin",
+      "auth_method": "key",
+      "key_path": "~/.ssh/id_rsa",
+      "passphrase": "key_passphrase"
+    },
+    {
       "name": "windows-server",
       "description": "Windows 服务器",
       "protocol": "rdp",
@@ -173,7 +193,7 @@ trelay/
   "groups": [
     {
       "name": "production",
-      "profiles": ["web-server", "windows-server"]
+      "profiles": ["web-server", "db-server", "windows-server"]
     }
   ]
 }
@@ -194,10 +214,41 @@ trelay/
 | auth_method | string | 认证方式：password, key |
 | password | string | 密码 |
 | key_path | string | SSH 私钥路径 |
+| passphrase | string | SSH 私钥密码 |
 | domain | string | RDP 域 |
 | screen_size | string | RDP 分辨率 |
 | color_depth | int | RDP 颜色深度 |
 | view_only | bool | VNC 只读模式 |
+
+## SSH 密钥管理
+
+### 密钥配置方式
+
+在新建或编辑 SSH 连接时，选择密钥认证后会显示"已导入密钥"选项：
+
+| 选项 | 说明 |
+|------|------|
+| 是 | 使用已有的密钥文件路径（如 `~/.ssh/id_rsa`） |
+| 否 | 直接粘贴密钥内容，自动保存到本地 |
+
+### 托管密钥目录
+
+粘贴的密钥内容会自动保存到 `~/.config/trelay/keys/` 目录：
+
+```
+~/.config/trelay/keys/
+├── web-server_a1b2c3_key.pem
+├── db-server_d4e5f6_key.pem
+└── ...
+```
+
+**文件命名规则**：`<主机名>_<6位随机字符>_key.pem`
+
+### 安全说明
+
+- 托管密钥目录权限：`0700`
+- 密钥文件权限：`0600`
+- 密钥内容必须是有效的 PEM 格式（包含 `-----BEGIN` 和 `-----END` 标识）
 
 **分组配置 (groups)**
 
@@ -223,5 +274,6 @@ go test ./...
 ## 注意事项
 
 - 配置文件中的密码以明文存储，建议设置文件权限为 `600`
+- 托管的 SSH 密钥自动设置安全权限（文件 `0600`，目录 `0700`）
 - 支持 Linux 和 macOS 系统
 - 建议使用现代终端模拟器（iTerm2、kitty、alacritty）
