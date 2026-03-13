@@ -13,6 +13,7 @@ import (
 	"unicode"
 
 	"trelay/internal/config"
+	"trelay/internal/keymgr"
 	"trelay/internal/protocol"
 	sshpkg "trelay/internal/protocol/ssh"
 	"trelay/internal/ui/dialogs"
@@ -650,6 +651,30 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if a.newConnectionDialog.IsSaved() {
 				// 创建新主机配置
 				host := a.newConnectionDialog.CreateHostConfig()
+
+				// 保存密钥内容（如果需要）
+				if a.newConnectionDialog.NeedsToSaveKey() {
+					keyContent := a.newConnectionDialog.GetKeyContent()
+					if keyContent != "" {
+						keyPath, err := keymgr.SaveKey(host.Name, keyContent)
+						if err != nil {
+							a.logger.Error("保存密钥失败", zap.Error(err))
+							// 显示错误对话框
+							a.showErrorDialog = true
+							a.errorDialog = dialogs.NewErrorDialog(
+								fmt.Sprintf("保存密钥失败: %v", err),
+								a.width, a.height,
+							)
+							// 关闭新建对话框，显示错误
+							a.showNewConnectionDialog = false
+							a.newConnectionDialog = nil
+							return a, cmd
+						}
+						host.KeyPath = keyPath
+						a.logger.Info("密钥已保存", zap.String("path", keyPath))
+					}
+				}
+
 				// 添加到配置中
 				a.config.Profiles = append(a.config.Profiles, host)
 
@@ -757,6 +782,31 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// 查找并更新配置中的主机
 				for _, h := range a.config.Profiles {
 					if h.Name == originalName {
+						// 保存密钥内容（如果需要）
+						if a.editDialog.NeedsToSaveKey() {
+							keyContent := a.editDialog.GetKeyContent()
+							if keyContent != "" {
+								// 使用编辑后的主机名
+								newHostName := a.editDialog.GetNameInput()
+								keyPath, err := keymgr.SaveKey(newHostName, keyContent)
+								if err != nil {
+									a.logger.Error("保存密钥失败", zap.Error(err))
+									// 显示错误对话框
+									a.showErrorDialog = true
+									a.errorDialog = dialogs.NewErrorDialog(
+										fmt.Sprintf("保存密钥失败: %v", err),
+										a.width, a.height,
+									)
+									// 关闭编辑对话框，显示错误
+									a.showEditDialog = false
+									a.editDialog = nil
+									return a, cmd
+								}
+								h.KeyPath = keyPath
+								a.logger.Info("密钥已保存", zap.String("path", keyPath))
+							}
+						}
+
 						// 更新主机配置
 						a.editDialog.UpdateHostConfig(h)
 						break

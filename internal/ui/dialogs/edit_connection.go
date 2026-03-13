@@ -5,8 +5,10 @@ import (
 	"net"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"trelay/internal/keymgr"
 	"trelay/pkg/models"
 )
 
@@ -24,6 +26,15 @@ type EditConnectionDialog struct {
 	passphraseInput  string // 密钥密码
 	groupInput       string // 服务器分组
 	descriptionInput string // 描述
+
+	// 密钥管理字段
+	useExistingKey      bool            // true=使用已导入密钥路径, false=粘贴密钥内容
+	useExistingOptions  []string        // ["是", "否"]
+	useExistingFocus    bool            // 下拉框聚焦状态
+	useExistingIndex    int             // 当前选中索引
+	keyContentTextarea  textarea.Model  // 多行密钥内容输入框
+	validationError     string          // 验证错误信息
+	keyContentFocused   bool            // textarea 是否聚焦
 
 	// 聚焦索引和导航状态
 	focusIndex int
@@ -113,11 +124,36 @@ func NewEditConnectionDialog(host *models.Host, groups []string, hostGroup strin
 		groupIndex = 0
 	}
 
+	// 确定密钥管理字段
+	useExistingKey := true
+	useExistingIndex := 0
+	keyContentInput := ""
+	if host.KeyPath != "" {
+		if keymgr.IsManagedKey(host.KeyPath) {
+			// 托管密钥，显示"否"并预填充内容
+			useExistingKey = false
+			useExistingIndex = 1
+			if content, err := keymgr.ReadKeyContent(host.KeyPath); err == nil {
+				keyContentInput = content
+			}
+		}
+	}
+
+	// 初始化 textarea
+	ta := textarea.New()
+	ta.SetWidth(50)
+	ta.SetHeight(6)
+	ta.Placeholder = "粘贴 PEM 格式的私钥内容..."
+	ta.CharLimit = 0 // 不限制字符数
+	if keyContentInput != "" {
+		ta.SetValue(keyContentInput)
+	}
+
 	dialog := &EditConnectionDialog{
 		// 初始化字段列表
 		fields: []string{
 			"name", "ip", "port", "username", "protocol",
-			"authMethod", "password", "keyPath", "passphrase", "group", "description",
+			"authMethod", "password", "useExistingKey", "keyPath", "keyContent", "passphrase", "group", "description",
 		},
 		focusIndex: 0,
 
@@ -144,6 +180,15 @@ func NewEditConnectionDialog(host *models.Host, groups []string, hostGroup strin
 		passphraseInput:  host.Passphrase,
 		groupInput:       groupInput,
 		descriptionInput: host.Description,
+
+		// 密钥管理字段
+		useExistingKey:      useExistingKey,
+		useExistingOptions:  []string{"是", "否"},
+		useExistingFocus:    false,
+		useExistingIndex:    useExistingIndex,
+		keyContentTextarea:  ta,
+		validationError:     "",
+		keyContentFocused:   false,
 
 		originalName: host.Name,
 
@@ -172,6 +217,12 @@ func (d *EditConnectionDialog) Update(msg tea.Msg) (*EditConnectionDialog, tea.C
 		switch msg.Type {
 		// 取消操作
 		case tea.KeyEsc:
+			// 如果 textarea 聚焦，退出编辑模式
+			if d.keyContentFocused {
+				d.keyContentFocused = false
+				d.keyContentTextarea.Blur()
+				return d, nil
+			}
 			d.canceled = true
 			d.closed = true
 			return d, nil
@@ -180,6 +231,12 @@ func (d *EditConnectionDialog) Update(msg tea.Msg) (*EditConnectionDialog, tea.C
 
 		// 确认操作
 		case tea.KeyEnter:
+			// 如果 textarea 聚焦，插入换行
+			if d.keyContentFocused {
+				var cmd tea.Cmd
+				d.keyContentTextarea, cmd = d.keyContentTextarea.Update(msg)
+				return d, cmd
+			}
 			// 如果聚焦在下拉框上，确认选择
 			if d.protocolFocus {
 				d.protocol = d.protocolOptions[d.protocolIndex]
@@ -201,41 +258,76 @@ func (d *EditConnectionDialog) Update(msg tea.Msg) (*EditConnectionDialog, tea.C
 			} else if d.groupFocus {
 				d.groupInput = d.groupOptions[d.groupIndex]
 				d.groupFocus = false
+			} else if d.useExistingFocus {
+				d.useExistingKey = d.useExistingIndex == 0 // 0 = "是", 1 = "否"
+				d.useExistingFocus = false
+				d.ensureValidFocusIndex()
 			} else {
 				// 验证输入并保存
 				if err := d.validate(); err == nil {
+					d.validationError = "" // 清除错误
 					d.saved = true
 					d.closed = true
 				} else {
-					// 这里可以显示验证错误，但为了简单起见，我们只打印到控制台
-					return d, tea.Printf("验证失败: %v", err)
+					// 设置验证错误信息
+					d.validationError = err.Error()
 				}
 			}
 			return d, nil
 
 		// 导航操作
 		case tea.KeyTab:
+			// 如果 textarea 聚焦，退出编辑模式
+			if d.keyContentFocused {
+				d.keyContentFocused = false
+				d.keyContentTextarea.Blur()
+				d.navigateNextField()
+				return d, nil
+			}
 			d.navigateNextField()
 		case tea.KeyShiftTab:
+			// 如果 textarea 聚焦，退出编辑模式
+			if d.keyContentFocused {
+				d.keyContentFocused = false
+				d.keyContentTextarea.Blur()
+				d.navigatePreviousField()
+				return d, nil
+			}
 			d.navigatePreviousField()
 		case tea.KeyUp:
+			// 如果 textarea 聚焦，传递给 textarea
+			if d.keyContentFocused {
+				var cmd tea.Cmd
+				d.keyContentTextarea, cmd = d.keyContentTextarea.Update(msg)
+				return d, cmd
+			}
 			if d.protocolFocus && d.protocolIndex > 0 {
 				d.protocolIndex--
 			} else if d.authFocus && d.authIndex > 0 {
 				d.authIndex--
 			} else if d.groupFocus && d.groupIndex > 0 {
 				d.groupIndex--
-			} else if !d.protocolFocus && !d.authFocus && !d.groupFocus {
+			} else if d.useExistingFocus && d.useExistingIndex > 0 {
+				d.useExistingIndex--
+			} else if !d.protocolFocus && !d.authFocus && !d.groupFocus && !d.useExistingFocus {
 				d.navigatePreviousField()
 			}
 		case tea.KeyDown:
+			// 如果 textarea 聚焦，传递给 textarea
+			if d.keyContentFocused {
+				var cmd tea.Cmd
+				d.keyContentTextarea, cmd = d.keyContentTextarea.Update(msg)
+				return d, cmd
+			}
 			if d.protocolFocus && d.protocolIndex < len(d.protocolOptions)-1 {
 				d.protocolIndex++
 			} else if d.authFocus && d.authIndex < len(d.authOptions)-1 {
 				d.authIndex++
 			} else if d.groupFocus && d.groupIndex < len(d.groupOptions)-1 {
 				d.groupIndex++
-			} else if !d.protocolFocus && !d.authFocus && !d.groupFocus {
+			} else if d.useExistingFocus && d.useExistingIndex < len(d.useExistingOptions)-1 {
+				d.useExistingIndex++
+			} else if !d.protocolFocus && !d.authFocus && !d.groupFocus && !d.useExistingFocus {
 				d.navigateNextField()
 			}
 
@@ -251,6 +343,12 @@ func (d *EditConnectionDialog) Update(msg tea.Msg) (*EditConnectionDialog, tea.C
 					d.authFocus = true
 				} else if fieldName == "group" {
 					d.groupFocus = true
+				} else if fieldName == "useExistingKey" && d.protocol == "ssh" && d.authMethod == "key" {
+					d.useExistingFocus = true
+				} else if fieldName == "keyContent" && !d.useExistingKey {
+					// 进入 textarea 编辑模式
+					d.keyContentFocused = true
+					d.keyContentTextarea.Focus()
 				} else {
 					// 非下拉字段，将空格作为普通字符输入
 					switch fieldName {
@@ -270,7 +368,14 @@ func (d *EditConnectionDialog) Update(msg tea.Msg) (*EditConnectionDialog, tea.C
 
 		// 文本输入操作
 		default:
-			if !d.protocolFocus && !d.authFocus && !d.groupFocus {
+			// 如果 textarea 聚焦，优先处理
+			if d.keyContentFocused && !d.useExistingKey {
+				var cmd tea.Cmd
+				d.keyContentTextarea, cmd = d.keyContentTextarea.Update(msg)
+				return d, cmd
+			}
+
+			if !d.protocolFocus && !d.authFocus && !d.groupFocus && !d.useExistingFocus {
 				visibleFields := d.getVisibleFields()
 				if d.focusIndex < len(visibleFields) {
 					fieldName := visibleFields[d.focusIndex]
@@ -383,11 +488,30 @@ func (d *EditConnectionDialog) View() string {
 			render:   d.renderPasswordField,
 		},
 		{
+			name:     "useExistingKey",
+			label:    "已导入密钥",
+			visible:  d.protocol == "ssh" && d.authMethod == "key",
+			getValue: func() string {
+				if d.useExistingKey {
+					return "是"
+				}
+				return "否"
+			},
+			render: d.renderUseExistingSelect,
+		},
+		{
 			name:     "keyPath",
 			label:    "密钥路径",
-			visible:  d.protocol == "ssh" && d.authMethod == "key",
+			visible:  d.protocol == "ssh" && d.authMethod == "key" && d.useExistingKey,
 			getValue: func() string { return d.keyPathInput },
 			render:   d.renderTextField,
+		},
+		{
+			name:     "keyContent",
+			label:    "密钥内容",
+			visible:  d.protocol == "ssh" && d.authMethod == "key" && !d.useExistingKey,
+			getValue: func() string { return d.keyContentTextarea.Value() },
+			render:   d.renderKeyContentTextarea,
 		},
 		{
 			name:     "passphrase",
@@ -432,6 +556,12 @@ func (d *EditConnectionDialog) View() string {
 
 	content.WriteString("\n")
 	content.WriteString(hintStyle.Render("使用 ↑/↓ 导航，Enter 确认，Tab 切换字段，Esc 取消"))
+
+	// 渲染验证错误
+	if d.validationError != "" {
+		content.WriteString("\n\n")
+		content.WriteString(d.renderValidationError())
+	}
 
 	// 渲染对话框内容
 	dialogContent := dialogStyle.Render(content.String())
@@ -623,6 +753,130 @@ func (d *EditConnectionDialog) renderGroupSelect(label, value string, focused bo
 	return builder.String()
 }
 
+// 渲染已导入密钥选择字段
+func (d *EditConnectionDialog) renderUseExistingSelect(label, value string, focused bool) string {
+	var builder strings.Builder
+
+	selectedStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#000000")).
+		Background(lipgloss.Color("#00ff00")).
+		Bold(true)
+
+	cursorStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#000000")).
+		Background(lipgloss.Color("#ffff00")).
+		Bold(true)
+
+	builder.WriteString(label)
+	builder.WriteString(": ")
+
+	if d.useExistingFocus || focused {
+		builder.WriteString("(")
+	} else {
+		builder.WriteString(" ")
+	}
+
+	for i, opt := range d.useExistingOptions {
+		isSelected := (i == 0 && d.useExistingKey) || (i == 1 && !d.useExistingKey)
+		isCursor := d.useExistingFocus && i == d.useExistingIndex
+
+		if isCursor {
+			builder.WriteString(cursorStyle.Render(fmt.Sprintf(" %s ", opt)))
+		} else if isSelected {
+			builder.WriteString(selectedStyle.Render(fmt.Sprintf(" %s ", opt)))
+		} else {
+			builder.WriteString(fmt.Sprintf(" %s ", opt))
+		}
+		if i < len(d.useExistingOptions)-1 {
+			builder.WriteString("|")
+		}
+	}
+
+	if d.useExistingFocus || focused {
+		builder.WriteString(")")
+	} else {
+		builder.WriteString(" ")
+	}
+
+	return builder.String()
+}
+
+// 渲染多行文本字段（用于密钥内容）
+func (d *EditConnectionDialog) renderMultilineField(label, value string, focused bool) string {
+	fieldStyle := lipgloss.NewStyle()
+	if focused {
+		fieldStyle = fieldStyle.
+			Foreground(lipgloss.Color("#000000")).
+			Background(lipgloss.Color("#00ff00"))
+	} else {
+		fieldStyle = fieldStyle.
+			Foreground(lipgloss.Color("#00ff00"))
+	}
+
+	var builder strings.Builder
+	builder.WriteString(label)
+	builder.WriteString(": ")
+
+	// 显示截断预览和行数
+	lines := strings.Split(value, "\n")
+	if len(value) > 50 {
+		builder.WriteString(fieldStyle.Render(value[:50] + "..."))
+	} else if len(value) > 0 {
+		builder.WriteString(fieldStyle.Render(value))
+	} else {
+		builder.WriteString(fieldStyle.Render("(粘贴密钥内容)"))
+	}
+	builder.WriteString(fmt.Sprintf(" (%d 行)", len(lines)))
+
+	if focused {
+		builder.WriteString("_")
+	}
+
+	return builder.String()
+}
+
+// 渲染密钥内容 textarea
+func (d *EditConnectionDialog) renderKeyContentTextarea(label, value string, focused bool) string {
+	var builder strings.Builder
+
+	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#00ff00"))
+	builder.WriteString(labelStyle.Render(label + ":"))
+	builder.WriteString("\n")
+
+	// 渲染 textarea
+	if d.keyContentFocused {
+		builder.WriteString(d.keyContentTextarea.View())
+	} else {
+		// 非聚焦时显示预览
+		content := d.keyContentTextarea.Value()
+		lines := strings.Split(content, "\n")
+		previewStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#00ff00")).
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("#00ff00")).
+			Padding(0, 1)
+		if len(content) > 0 {
+			builder.WriteString(previewStyle.Render(fmt.Sprintf("%d 行密钥内容 (按空格编辑)", len(lines))))
+		} else {
+			placeholderStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#888888"))
+			builder.WriteString(placeholderStyle.Render("(按空格输入密钥内容)"))
+		}
+	}
+
+	return builder.String()
+}
+
+// renderValidationError 渲染验证错误信息
+func (d *EditConnectionDialog) renderValidationError() string {
+	if d.validationError == "" {
+		return ""
+	}
+	errorStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#ff0000")).
+		Bold(true)
+	return errorStyle.Render("✗ " + d.validationError)
+}
+
 // 验证输入
 func (d *EditConnectionDialog) validate() error {
 	// 验证必填字段
@@ -652,8 +906,23 @@ func (d *EditConnectionDialog) validate() error {
 			return models.NewValidationError("密码认证需要输入密码")
 		}
 
-		if d.authMethod == "key" && strings.TrimSpace(d.keyPathInput) == "" {
-			return models.NewValidationError("密钥认证需要输入密钥路径")
+		if d.authMethod == "key" {
+			if d.useExistingKey {
+				if strings.TrimSpace(d.keyPathInput) == "" {
+					return models.NewValidationError("密钥认证需要输入密钥路径")
+				}
+			} else {
+				content := d.keyContentTextarea.Value()
+				if strings.TrimSpace(content) == "" {
+					return models.NewValidationError("请输入密钥内容")
+				}
+				if !strings.Contains(content, "-----BEGIN") {
+					return models.NewValidationError("密钥格式无效：缺少 PEM 头部标识")
+				}
+				if !strings.Contains(content, "-----END") {
+					return models.NewValidationError("密钥格式无效：缺少 PEM 尾部标识")
+				}
+			}
 		}
 	} else if d.protocol == "rdp" {
 		if strings.TrimSpace(d.passwordInput) == "" {
@@ -701,7 +970,10 @@ func (d *EditConnectionDialog) UpdateHostConfig(host *models.Host) *models.Host 
 		if host.AuthMethod == "password" {
 			host.Password = strings.TrimSpace(d.passwordInput)
 		} else if host.AuthMethod == "key" {
-			host.KeyPath = strings.TrimSpace(d.keyPathInput)
+			if d.useExistingKey {
+				host.KeyPath = strings.TrimSpace(d.keyPathInput)
+			}
+			// 如果 !useExistingKey，KeyPath 由 app.go 在保存密钥文件后设置
 			host.Passphrase = strings.TrimSpace(d.passphraseInput)
 		}
 	} else {
@@ -710,6 +982,19 @@ func (d *EditConnectionDialog) UpdateHostConfig(host *models.Host) *models.Host 
 	}
 
 	return host
+}
+
+// GetKeyContent 获取密钥内容
+func (d *EditConnectionDialog) GetKeyContent() string {
+	if d.useExistingKey {
+		return "" // 使用已导入密钥路径，无需保存内容
+	}
+	return strings.TrimSpace(d.keyContentTextarea.Value())
+}
+
+// NeedsToSaveKey 判断是否需要保存密钥文件
+func (d *EditConnectionDialog) NeedsToSaveKey() bool {
+	return d.protocol == "ssh" && d.authMethod == "key" && !d.useExistingKey
 }
 
 // GetGroup 获取分组名称
@@ -759,7 +1044,9 @@ func (d *EditConnectionDialog) getVisibleFields() []string {
 		{name: "protocol", visible: true},
 		{name: "authMethod", visible: d.protocol == "ssh"},
 		{name: "password", visible: (d.protocol == "ssh" && d.authMethod == "password") || d.protocol == "rdp" || d.protocol == "vnc"},
-		{name: "keyPath", visible: d.protocol == "ssh" && d.authMethod == "key"},
+		{name: "useExistingKey", visible: d.protocol == "ssh" && d.authMethod == "key"},
+		{name: "keyPath", visible: d.protocol == "ssh" && d.authMethod == "key" && d.useExistingKey},
+		{name: "keyContent", visible: d.protocol == "ssh" && d.authMethod == "key" && !d.useExistingKey},
 		{name: "passphrase", visible: d.protocol == "ssh" && d.authMethod == "key"},
 		{name: "group", visible: true},
 		{name: "description", visible: true},
@@ -807,7 +1094,9 @@ func (d *EditConnectionDialog) navigateNextField() {
 		{name: "protocol", visible: true},
 		{name: "authMethod", visible: d.protocol == "ssh"},
 		{name: "password", visible: (d.protocol == "ssh" && d.authMethod == "password") || d.protocol == "rdp" || d.protocol == "vnc"},
-		{name: "keyPath", visible: d.protocol == "ssh" && d.authMethod == "key"},
+		{name: "useExistingKey", visible: d.protocol == "ssh" && d.authMethod == "key"},
+		{name: "keyPath", visible: d.protocol == "ssh" && d.authMethod == "key" && d.useExistingKey},
+		{name: "keyContent", visible: d.protocol == "ssh" && d.authMethod == "key" && !d.useExistingKey},
 		{name: "passphrase", visible: d.protocol == "ssh" && d.authMethod == "key"},
 		{name: "group", visible: true},
 		{name: "description", visible: true},
@@ -838,7 +1127,9 @@ func (d *EditConnectionDialog) navigatePreviousField() {
 		{name: "protocol", visible: true},
 		{name: "authMethod", visible: d.protocol == "ssh"},
 		{name: "password", visible: (d.protocol == "ssh" && d.authMethod == "password") || d.protocol == "rdp" || d.protocol == "vnc"},
-		{name: "keyPath", visible: d.protocol == "ssh" && d.authMethod == "key"},
+		{name: "useExistingKey", visible: d.protocol == "ssh" && d.authMethod == "key"},
+		{name: "keyPath", visible: d.protocol == "ssh" && d.authMethod == "key" && d.useExistingKey},
+		{name: "keyContent", visible: d.protocol == "ssh" && d.authMethod == "key" && !d.useExistingKey},
 		{name: "passphrase", visible: d.protocol == "ssh" && d.authMethod == "key"},
 		{name: "group", visible: true},
 		{name: "description", visible: true},
@@ -868,7 +1159,9 @@ func (d *EditConnectionDialog) ensureValidFocusIndex() {
 		{name: "protocol", visible: true},
 		{name: "authMethod", visible: d.protocol == "ssh"},
 		{name: "password", visible: (d.protocol == "ssh" && d.authMethod == "password") || d.protocol == "rdp" || d.protocol == "vnc"},
-		{name: "keyPath", visible: d.protocol == "ssh" && d.authMethod == "key"},
+		{name: "useExistingKey", visible: d.protocol == "ssh" && d.authMethod == "key"},
+		{name: "keyPath", visible: d.protocol == "ssh" && d.authMethod == "key" && d.useExistingKey},
+		{name: "keyContent", visible: d.protocol == "ssh" && d.authMethod == "key" && !d.useExistingKey},
 		{name: "passphrase", visible: d.protocol == "ssh" && d.authMethod == "key"},
 		{name: "group", visible: true},
 		{name: "description", visible: true},
