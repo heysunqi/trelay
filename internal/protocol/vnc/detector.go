@@ -18,7 +18,7 @@ type ToolDetector struct {
 
 // NewToolDetector 创建新的工具检测器
 func NewToolDetector() *ToolDetector {
-	logger, _ := zap.NewDevelopment()
+	logger, _ := zap.NewProduction()
 	return &ToolDetector{
 		logger: logger,
 	}

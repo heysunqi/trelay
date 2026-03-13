@@ -38,11 +38,12 @@ type Client struct {
 	logger      *zap.Logger
 	stdout      *bytes.Buffer
 	stderr      *bytes.Buffer
+	waited      bool // true if cmd.Wait() has already been called
 }
 
 // NewClient 创建VNC客户端
 func NewClient(host *models.Host) *Client {
-	logger, _ := zap.NewDevelopment()
+	logger, _ := zap.NewProduction()
 	return &Client{
 		host:        host,
 		status:      StatusIdle,
@@ -165,13 +166,22 @@ func (c *Client) Disconnect() error {
 	c.logger.Info("准备断开VNC连接...")
 	if c.cmd == nil || c.cmd.Process == nil {
 		c.logger.Info("VNC进程已不存在，无需断开")
+		c.status = StatusDisconnected
+		return nil
+	}
+
+	// 如果进程已经被Wait过（macOS open命令场景），无需再次处理
+	if c.waited {
+		c.logger.Info("进程已结束，无需断开")
+		c.status = StatusDisconnected
 		return nil
 	}
 
 	// 尝试优雅退出
 	c.logger.Info("尝试发送SIGTERM信号...")
-	err := c.cmd.Process.Signal(syscall.SIGTERM)
-	c.logger.Info("发送信号完成", zap.Error(err))
+	if err := c.cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		c.logger.Info("发送SIGTERM失败（进程可能已退出）", zap.Error(err))
+	}
 
 	// 等待进程结束（最多5秒）
 	done := make(chan error, 1)
@@ -180,16 +190,15 @@ func (c *Client) Disconnect() error {
 	}()
 
 	select {
-	case err := <-done:
-		c.logger.Info("进程已退出", zap.Error(err))
+	case waitErr := <-done:
+		c.logger.Info("进程已退出", zap.Error(waitErr))
 	case <-time.After(5 * time.Second):
 		c.logger.Warn("等待超时，强制终止进程")
-		// 超时，强制终止
 		c.cmd.Process.Kill()
 	}
 
 	c.status = StatusDisconnected
-	return err
+	return nil
 }
 
 // IsConnected 返回是否已连接 (实现Session接口)
@@ -231,12 +240,16 @@ func (c *Client) GetDuration() time.Duration {
 func (c *Client) StartInteractiveSession() error {
 	c.logger.Info("开始等待VNC会话结束...")
 
-	// macOS使用open命令，不需要等待
+	// macOS使用open命令，open是异步启动器，会很快退出
 	if GetPlatformName() == "macOS" {
-		c.logger.Info("macOS屏幕共享已启动，请在屏幕共享应用中操作")
-		c.logger.Info("按回车键返回...")
-		// 等待用户按回车
-		fmt.Scanln()
+		c.logger.Info("macOS屏幕共享已启动")
+		// 等待open进程本身结束（通常 ~100ms）
+		if c.cmd != nil && c.cmd.Process != nil {
+			c.cmd.Wait()
+			c.waited = true
+		}
+		// 短暂等待，让屏幕共享应用有时间初始化
+		time.Sleep(500 * time.Millisecond)
 		c.status = StatusDisconnected
 		return nil
 	}
@@ -249,6 +262,7 @@ func (c *Client) StartInteractiveSession() error {
 	// 等待进程结束
 	c.logger.Info("调用 cmd.Wait()...")
 	err := c.cmd.Wait()
+	c.waited = true
 	c.logger.Info("cmd.Wait() 返回", zap.Error(err))
 
 	// 打印输出
