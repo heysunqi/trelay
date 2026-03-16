@@ -26,6 +26,16 @@ type Host struct {
 	// VNC特定字段
 	ViewOnly bool `json:"view_only,omitempty" mapstructure:"view_only"`
 
+	// SSH 代理配置
+	ConnectVia      string `json:"connect_via,omitempty" mapstructure:"connect_via"`           // 连接方式: direct, proxyjump, proxyserver
+	ProxyJump       string `json:"proxy_jump,omitempty" mapstructure:"proxy_jump"`             // 跳板机名称（引用配置中的其他主机）
+	ProxyHost       string `json:"proxy_host,omitempty" mapstructure:"proxy_host"`             // 代理服务器地址
+	ProxyPort       int    `json:"proxy_port,omitempty" mapstructure:"proxy_port"`             // 代理服务器端口
+	ProxyUser       string `json:"proxy_user,omitempty" mapstructure:"proxy_user"`             // 代理服务器用户名
+	ProxyAuthMethod string `json:"proxy_auth_method,omitempty" mapstructure:"proxy_auth_method"` // 代理服务器认证方式
+	ProxyPassword   string `json:"proxy_password,omitempty" mapstructure:"proxy_password"`       // 代理服务器密码
+	ProxyKeyPath    string `json:"proxy_key_path,omitempty" mapstructure:"proxy_key_path"`       // 代理服务器密钥路径
+
 	// 连接选项
 	Options map[string]interface{} `json:"options,omitempty"`
 

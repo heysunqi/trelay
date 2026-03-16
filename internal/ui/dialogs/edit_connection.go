@@ -36,6 +36,21 @@ type EditConnectionDialog struct {
 	validationError     string          // 验证错误信息
 	keyContentFocused   bool            // textarea 是否聚焦
 
+	// 代理连接字段
+	connectVia         string   // 连接方式: direct, proxyjump, proxyserver
+	connectViaOptions  []string // ["直连", "ProxyJump", "ProxyServer"]
+	connectViaFocus    bool     // 连接方式下拉框聚焦状态
+	connectViaIndex    int      // 当前选中索引
+	proxyJumpInput     string   // 跳板机名称
+	proxyJumpListFocus bool     // 跳板机列表选择模式
+	proxyJumpListIndex int      // 跳板机列表当前索引
+	proxyHostInput     string   // 代理服务器地址
+	proxyPortInput     string   // 代理服务器端口
+	proxyUserInput     string   // 代理服务器用户名
+	proxyPasswordInput string   // 代理服务器密码
+	proxyKeyPathInput  string   // 代理服务器密钥路径
+	availableProxies   []string // 可用的跳板机列表
+
 	// 聚焦索引和导航状态
 	focusIndex int
 	fields     []string // 字段列表
@@ -65,7 +80,7 @@ type EditConnectionDialog struct {
 }
 
 // NewEditConnectionDialog 创建编辑连接配置对话框
-func NewEditConnectionDialog(host *models.Host, groups []string, hostGroup string, width, height int) *EditConnectionDialog {
+func NewEditConnectionDialog(host *models.Host, groups []string, hostGroup string, availableProxies []string, width, height int) *EditConnectionDialog {
 	// 格式化分组选项，确保"未分组"选项可用
 	var formattedGroups []string
 	if len(groups) > 0 {
@@ -149,11 +164,26 @@ func NewEditConnectionDialog(host *models.Host, groups []string, hostGroup strin
 		ta.SetValue(keyContentInput)
 	}
 
+	// 确定连接方式索引
+	connectVia := host.ConnectVia
+	if connectVia == "" {
+		connectVia = "direct"
+	}
+	connectViaIndex := 0
+	switch connectVia {
+	case "proxyjump":
+		connectViaIndex = 1
+	case "proxyserver":
+		connectViaIndex = 2
+	}
+
 	dialog := &EditConnectionDialog{
 		// 初始化字段列表
 		fields: []string{
 			"name", "ip", "port", "username", "protocol",
-			"authMethod", "password", "useExistingKey", "keyPath", "keyContent", "passphrase", "group", "description",
+			"authMethod", "password", "useExistingKey", "keyPath", "keyContent", "passphrase",
+			"connectVia", "proxyJump", "proxyHost", "proxyPort", "proxyUser", "proxyPassword", "proxyKeyPath",
+			"group", "description",
 		},
 		focusIndex: 0,
 
@@ -190,11 +220,36 @@ func NewEditConnectionDialog(host *models.Host, groups []string, hostGroup strin
 		validationError:     "",
 		keyContentFocused:   false,
 
+		// 代理连接字段
+		connectVia:         connectVia,
+		connectViaOptions:  []string{"直连", "ProxyJump", "ProxyServer"},
+		connectViaFocus:    false,
+		connectViaIndex:    connectViaIndex,
+		proxyJumpInput:     host.ProxyJump,
+		proxyJumpListFocus: false,
+		proxyJumpListIndex: 0, // 初始化时定位到已选择的跳板机
+		proxyHostInput:     host.ProxyHost,
+		proxyPortInput:     fmt.Sprintf("%d", host.ProxyPort),
+		proxyUserInput:     host.ProxyUser,
+		proxyPasswordInput: host.ProxyPassword,
+		proxyKeyPathInput:  host.ProxyKeyPath,
+		availableProxies:   availableProxies,
+
 		originalName: host.Name,
 
 		// 终端尺寸
 		width:  width,
 		height: height,
+	}
+
+	// 初始化跳板机列表索引，定位到已选择的跳板机
+	if host.ProxyJump != "" {
+		for i, proxy := range availableProxies {
+			if proxy == host.ProxyJump {
+				dialog.proxyJumpListIndex = i
+				break
+			}
+		}
 	}
 
 	return dialog
@@ -217,6 +272,11 @@ func (d *EditConnectionDialog) Update(msg tea.Msg) (*EditConnectionDialog, tea.C
 		switch msg.Type {
 		// 取消操作
 		case tea.KeyEsc:
+			// 如果跳板机列表选择模式，退出列表模式
+			if d.proxyJumpListFocus {
+				d.proxyJumpListFocus = false
+				return d, nil
+			}
 			// 如果 textarea 聚焦，退出编辑模式
 			if d.keyContentFocused {
 				d.keyContentFocused = false
@@ -231,6 +291,14 @@ func (d *EditConnectionDialog) Update(msg tea.Msg) (*EditConnectionDialog, tea.C
 
 		// 确认操作
 		case tea.KeyEnter:
+			// 如果跳板机列表选择模式，确认选择
+			if d.proxyJumpListFocus {
+				if len(d.availableProxies) > 0 {
+					d.proxyJumpInput = d.availableProxies[d.proxyJumpListIndex]
+				}
+				d.proxyJumpListFocus = false
+				return d, nil
+			}
 			// 如果 textarea 聚焦，插入换行
 			if d.keyContentFocused {
 				var cmd tea.Cmd
@@ -261,6 +329,18 @@ func (d *EditConnectionDialog) Update(msg tea.Msg) (*EditConnectionDialog, tea.C
 			} else if d.useExistingFocus {
 				d.useExistingKey = d.useExistingIndex == 0 // 0 = "是", 1 = "否"
 				d.useExistingFocus = false
+				d.ensureValidFocusIndex()
+			} else if d.connectViaFocus {
+				// 根据选择设置 connectVia 值
+				switch d.connectViaIndex {
+				case 0:
+					d.connectVia = "direct"
+				case 1:
+					d.connectVia = "proxyjump"
+				case 2:
+					d.connectVia = "proxyserver"
+				}
+				d.connectViaFocus = false
 				d.ensureValidFocusIndex()
 			} else {
 				// 验证输入并保存
@@ -295,6 +375,13 @@ func (d *EditConnectionDialog) Update(msg tea.Msg) (*EditConnectionDialog, tea.C
 			}
 			d.navigatePreviousField()
 		case tea.KeyUp:
+			// 如果跳板机列表选择模式，导航列表
+			if d.proxyJumpListFocus {
+				if d.proxyJumpListIndex > 0 {
+					d.proxyJumpListIndex--
+				}
+				return d, nil
+			}
 			// 如果 textarea 聚焦，传递给 textarea
 			if d.keyContentFocused {
 				var cmd tea.Cmd
@@ -309,10 +396,19 @@ func (d *EditConnectionDialog) Update(msg tea.Msg) (*EditConnectionDialog, tea.C
 				d.groupIndex--
 			} else if d.useExistingFocus && d.useExistingIndex > 0 {
 				d.useExistingIndex--
-			} else if !d.protocolFocus && !d.authFocus && !d.groupFocus && !d.useExistingFocus {
+			} else if d.connectViaFocus && d.connectViaIndex > 0 {
+				d.connectViaIndex--
+			} else if !d.protocolFocus && !d.authFocus && !d.groupFocus && !d.useExistingFocus && !d.connectViaFocus {
 				d.navigatePreviousField()
 			}
 		case tea.KeyDown:
+			// 如果跳板机列表选择模式，导航列表
+			if d.proxyJumpListFocus {
+				if d.proxyJumpListIndex < len(d.availableProxies)-1 {
+					d.proxyJumpListIndex++
+				}
+				return d, nil
+			}
 			// 如果 textarea 聚焦，传递给 textarea
 			if d.keyContentFocused {
 				var cmd tea.Cmd
@@ -327,7 +423,9 @@ func (d *EditConnectionDialog) Update(msg tea.Msg) (*EditConnectionDialog, tea.C
 				d.groupIndex++
 			} else if d.useExistingFocus && d.useExistingIndex < len(d.useExistingOptions)-1 {
 				d.useExistingIndex++
-			} else if !d.protocolFocus && !d.authFocus && !d.groupFocus && !d.useExistingFocus {
+			} else if d.connectViaFocus && d.connectViaIndex < len(d.connectViaOptions)-1 {
+				d.connectViaIndex++
+			} else if !d.protocolFocus && !d.authFocus && !d.groupFocus && !d.useExistingFocus && !d.connectViaFocus {
 				d.navigateNextField()
 			}
 
@@ -345,6 +443,19 @@ func (d *EditConnectionDialog) Update(msg tea.Msg) (*EditConnectionDialog, tea.C
 					d.groupFocus = true
 				} else if fieldName == "useExistingKey" && d.protocol == "ssh" && d.authMethod == "key" {
 					d.useExistingFocus = true
+				} else if fieldName == "connectVia" && d.protocol == "ssh" {
+					d.connectViaFocus = true
+				} else if fieldName == "proxyJump" && d.connectVia == "proxyjump" && len(d.availableProxies) > 0 {
+					// 进入跳板机列表选择模式
+					d.proxyJumpListFocus = true
+					// 如果当前有选中的跳板机，定位到该位置
+					d.proxyJumpListIndex = 0
+					for i, proxy := range d.availableProxies {
+						if proxy == d.proxyJumpInput {
+							d.proxyJumpListIndex = i
+							break
+						}
+					}
 				} else if fieldName == "keyContent" && !d.useExistingKey {
 					// 进入 textarea 编辑模式
 					d.keyContentFocused = true
@@ -362,6 +473,14 @@ func (d *EditConnectionDialog) Update(msg tea.Msg) (*EditConnectionDialog, tea.C
 						d.descriptionInput += " "
 					case "keyPath":
 						d.keyPathInput += " "
+					case "proxyHost":
+						d.proxyHostInput += " "
+					case "proxyPort":
+						d.proxyPortInput += " "
+					case "proxyUser":
+						d.proxyUserInput += " "
+					case "proxyKeyPath":
+						d.proxyKeyPathInput += " "
 					}
 				}
 			}
@@ -375,7 +494,7 @@ func (d *EditConnectionDialog) Update(msg tea.Msg) (*EditConnectionDialog, tea.C
 				return d, cmd
 			}
 
-			if !d.protocolFocus && !d.authFocus && !d.groupFocus && !d.useExistingFocus {
+			if !d.protocolFocus && !d.authFocus && !d.groupFocus && !d.useExistingFocus && !d.connectViaFocus && !d.proxyJumpListFocus {
 				visibleFields := d.getVisibleFields()
 				if d.focusIndex < len(visibleFields) {
 					fieldName := visibleFields[d.focusIndex]
@@ -400,6 +519,16 @@ func (d *EditConnectionDialog) Update(msg tea.Msg) (*EditConnectionDialog, tea.C
 						if msg.Type != tea.KeySpace {
 							d.groupInput = handleTextInput(d.groupInput, msg)
 						}
+					case "proxyHost":
+						d.proxyHostInput = handleTextInput(d.proxyHostInput, msg)
+					case "proxyPort":
+						d.proxyPortInput = handlePortInput(d.proxyPortInput, msg)
+					case "proxyUser":
+						d.proxyUserInput = handleTextInput(d.proxyUserInput, msg)
+					case "proxyPassword":
+						d.proxyPasswordInput = handlePasswordInput(d.proxyPasswordInput, msg)
+					case "proxyKeyPath":
+						d.proxyKeyPathInput = handleTextInput(d.proxyKeyPathInput, msg)
 					}
 				}
 			}
@@ -519,6 +648,64 @@ func (d *EditConnectionDialog) View() string {
 			visible:  d.protocol == "ssh" && d.authMethod == "key",
 			getValue: func() string { return d.passphraseInput },
 			render:   d.renderPasswordField,
+		},
+		{
+			name:     "connectVia",
+			label:    "连接方式",
+			visible:  d.protocol == "ssh",
+			getValue: func() string {
+				switch d.connectVia {
+				case "proxyjump":
+					return "ProxyJump"
+				case "proxyserver":
+					return "ProxyServer"
+				default:
+					return "直连"
+				}
+			},
+			render: d.renderConnectViaSelect,
+		},
+		{
+			name:     "proxyJump",
+			label:    "跳板机",
+			visible:  d.protocol == "ssh" && d.connectVia == "proxyjump",
+			getValue: func() string { return d.proxyJumpInput },
+			render:   d.renderProxyJumpInput,
+		},
+		{
+			name:     "proxyHost",
+			label:    "代理地址",
+			visible:  d.protocol == "ssh" && d.connectVia == "proxyserver",
+			getValue: func() string { return d.proxyHostInput },
+			render:   d.renderTextField,
+		},
+		{
+			name:     "proxyPort",
+			label:    "代理端口",
+			visible:  d.protocol == "ssh" && d.connectVia == "proxyserver",
+			getValue: func() string { return d.proxyPortInput },
+			render:   d.renderTextField,
+		},
+		{
+			name:     "proxyUser",
+			label:    "代理用户",
+			visible:  d.protocol == "ssh" && d.connectVia == "proxyserver",
+			getValue: func() string { return d.proxyUserInput },
+			render:   d.renderTextField,
+		},
+		{
+			name:     "proxyPassword",
+			label:    "代理密码",
+			visible:  d.protocol == "ssh" && d.connectVia == "proxyserver",
+			getValue: func() string { return d.proxyPasswordInput },
+			render:   d.renderPasswordField,
+		},
+		{
+			name:     "proxyKeyPath",
+			label:    "代理密钥路径",
+			visible:  d.protocol == "ssh" && d.connectVia == "proxyserver",
+			getValue: func() string { return d.proxyKeyPathInput },
+			render:   d.renderTextField,
 		},
 		{
 			name:     "group",
@@ -801,6 +988,116 @@ func (d *EditConnectionDialog) renderUseExistingSelect(label, value string, focu
 	return builder.String()
 }
 
+// 渲染连接方式选择字段
+func (d *EditConnectionDialog) renderConnectViaSelect(label, value string, focused bool) string {
+	var builder strings.Builder
+
+	selectedStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#000000")).
+		Background(lipgloss.Color("#00ff00")).
+		Bold(true)
+
+	cursorStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#000000")).
+		Background(lipgloss.Color("#ffff00")).
+		Bold(true)
+
+	builder.WriteString(label)
+	builder.WriteString(": ")
+
+	if d.connectViaFocus || focused {
+		builder.WriteString("(")
+	} else {
+		builder.WriteString(" ")
+	}
+
+	for i, opt := range d.connectViaOptions {
+		var isSelected bool
+		switch i {
+		case 0:
+			isSelected = d.connectVia == "direct"
+		case 1:
+			isSelected = d.connectVia == "proxyjump"
+		case 2:
+			isSelected = d.connectVia == "proxyserver"
+		}
+		isCursor := d.connectViaFocus && i == d.connectViaIndex
+
+		if isCursor {
+			builder.WriteString(cursorStyle.Render(fmt.Sprintf(" %s ", opt)))
+		} else if isSelected {
+			builder.WriteString(selectedStyle.Render(fmt.Sprintf(" %s ", opt)))
+		} else {
+			builder.WriteString(fmt.Sprintf(" %s ", opt))
+		}
+		if i < len(d.connectViaOptions)-1 {
+			builder.WriteString("|")
+		}
+	}
+
+	if d.connectViaFocus || focused {
+		builder.WriteString(")")
+	} else {
+		builder.WriteString(" ")
+	}
+
+	return builder.String()
+}
+
+// 渲染跳板机输入字段
+func (d *EditConnectionDialog) renderProxyJumpInput(label, value string, focused bool) string {
+	var builder strings.Builder
+
+	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#00ff00"))
+	selectedStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#000000")).
+		Background(lipgloss.Color("#00ff00"))
+	cursorStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#000000")).
+		Background(lipgloss.Color("#ffff00"))
+	hintStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#888888"))
+
+	builder.WriteString(labelStyle.Render(label + ":"))
+	builder.WriteString("\n")
+
+	if d.proxyJumpListFocus {
+		// 列表选择模式：显示垂直列表
+		for i, proxy := range d.availableProxies {
+			if i == d.proxyJumpListIndex {
+				// 当前光标位置
+				builder.WriteString("  ")
+				builder.WriteString(cursorStyle.Render("> " + proxy))
+			} else if proxy == d.proxyJumpInput {
+				// 已选中项
+				builder.WriteString("  ")
+				builder.WriteString(selectedStyle.Render("  " + proxy))
+			} else {
+				builder.WriteString("    ")
+				builder.WriteString(proxy)
+			}
+			builder.WriteString("\n")
+		}
+		builder.WriteString(hintStyle.Render("  (↑/↓ 选择，Enter 确认，Esc 取消)"))
+	} else {
+		// 普通模式：显示当前选择 + 提示
+		if len(d.availableProxies) > 0 {
+			if value != "" {
+				builder.WriteString(selectedStyle.Render("  " + value))
+			} else {
+				builder.WriteString(hintStyle.Render("  (未选择)"))
+			}
+			builder.WriteString("\n")
+			if focused {
+				builder.WriteString(hintStyle.Render("  (按空格选择跳板机)"))
+			}
+		} else {
+			builder.WriteString(hintStyle.Render("  (无可用跳板机)"))
+		}
+	}
+
+	return builder.String()
+}
+
 // 渲染多行文本字段（用于密钥内容）
 func (d *EditConnectionDialog) renderMultilineField(label, value string, focused bool) string {
 	fieldStyle := lipgloss.NewStyle()
@@ -976,6 +1273,39 @@ func (d *EditConnectionDialog) UpdateHostConfig(host *models.Host) *models.Host 
 			// 如果 !useExistingKey，KeyPath 由 app.go 在保存密钥文件后设置
 			host.Passphrase = strings.TrimSpace(d.passphraseInput)
 		}
+
+		// 设置代理连接信息
+		host.ConnectVia = d.connectVia
+		if d.connectVia == "proxyjump" {
+			host.ProxyJump = strings.TrimSpace(d.proxyJumpInput)
+			// 清除 ProxyServer 配置
+			host.ProxyHost = ""
+			host.ProxyPort = 0
+			host.ProxyUser = ""
+			host.ProxyPassword = ""
+			host.ProxyKeyPath = ""
+		} else if d.connectVia == "proxyserver" {
+			host.ProxyHost = strings.TrimSpace(d.proxyHostInput)
+			if strings.TrimSpace(d.proxyPortInput) != "" {
+				var port int
+				fmt.Sscanf(d.proxyPortInput, "%d", &port)
+				host.ProxyPort = port
+			}
+			host.ProxyUser = strings.TrimSpace(d.proxyUserInput)
+			host.ProxyPassword = strings.TrimSpace(d.proxyPasswordInput)
+			host.ProxyKeyPath = strings.TrimSpace(d.proxyKeyPathInput)
+			// 清除 ProxyJump 配置
+			host.ProxyJump = ""
+		} else {
+			// 直连，清除所有代理配置
+			host.ConnectVia = "direct"
+			host.ProxyJump = ""
+			host.ProxyHost = ""
+			host.ProxyPort = 0
+			host.ProxyUser = ""
+			host.ProxyPassword = ""
+			host.ProxyKeyPath = ""
+		}
 	} else {
 		// RDP和VNC使用密码认证
 		host.Password = strings.TrimSpace(d.passwordInput)
@@ -1048,6 +1378,13 @@ func (d *EditConnectionDialog) getVisibleFields() []string {
 		{name: "keyPath", visible: d.protocol == "ssh" && d.authMethod == "key" && d.useExistingKey},
 		{name: "keyContent", visible: d.protocol == "ssh" && d.authMethod == "key" && !d.useExistingKey},
 		{name: "passphrase", visible: d.protocol == "ssh" && d.authMethod == "key"},
+		{name: "connectVia", visible: d.protocol == "ssh"},
+		{name: "proxyJump", visible: d.protocol == "ssh" && d.connectVia == "proxyjump"},
+		{name: "proxyHost", visible: d.protocol == "ssh" && d.connectVia == "proxyserver"},
+		{name: "proxyPort", visible: d.protocol == "ssh" && d.connectVia == "proxyserver"},
+		{name: "proxyUser", visible: d.protocol == "ssh" && d.connectVia == "proxyserver"},
+		{name: "proxyPassword", visible: d.protocol == "ssh" && d.connectVia == "proxyserver"},
+		{name: "proxyKeyPath", visible: d.protocol == "ssh" && d.connectVia == "proxyserver"},
 		{name: "group", visible: true},
 		{name: "description", visible: true},
 	}
@@ -1098,6 +1435,13 @@ func (d *EditConnectionDialog) navigateNextField() {
 		{name: "keyPath", visible: d.protocol == "ssh" && d.authMethod == "key" && d.useExistingKey},
 		{name: "keyContent", visible: d.protocol == "ssh" && d.authMethod == "key" && !d.useExistingKey},
 		{name: "passphrase", visible: d.protocol == "ssh" && d.authMethod == "key"},
+		{name: "connectVia", visible: d.protocol == "ssh"},
+		{name: "proxyJump", visible: d.protocol == "ssh" && d.connectVia == "proxyjump"},
+		{name: "proxyHost", visible: d.protocol == "ssh" && d.connectVia == "proxyserver"},
+		{name: "proxyPort", visible: d.protocol == "ssh" && d.connectVia == "proxyserver"},
+		{name: "proxyUser", visible: d.protocol == "ssh" && d.connectVia == "proxyserver"},
+		{name: "proxyPassword", visible: d.protocol == "ssh" && d.connectVia == "proxyserver"},
+		{name: "proxyKeyPath", visible: d.protocol == "ssh" && d.connectVia == "proxyserver"},
 		{name: "group", visible: true},
 		{name: "description", visible: true},
 	}
@@ -1131,6 +1475,13 @@ func (d *EditConnectionDialog) navigatePreviousField() {
 		{name: "keyPath", visible: d.protocol == "ssh" && d.authMethod == "key" && d.useExistingKey},
 		{name: "keyContent", visible: d.protocol == "ssh" && d.authMethod == "key" && !d.useExistingKey},
 		{name: "passphrase", visible: d.protocol == "ssh" && d.authMethod == "key"},
+		{name: "connectVia", visible: d.protocol == "ssh"},
+		{name: "proxyJump", visible: d.protocol == "ssh" && d.connectVia == "proxyjump"},
+		{name: "proxyHost", visible: d.protocol == "ssh" && d.connectVia == "proxyserver"},
+		{name: "proxyPort", visible: d.protocol == "ssh" && d.connectVia == "proxyserver"},
+		{name: "proxyUser", visible: d.protocol == "ssh" && d.connectVia == "proxyserver"},
+		{name: "proxyPassword", visible: d.protocol == "ssh" && d.connectVia == "proxyserver"},
+		{name: "proxyKeyPath", visible: d.protocol == "ssh" && d.connectVia == "proxyserver"},
 		{name: "group", visible: true},
 		{name: "description", visible: true},
 	}
@@ -1163,6 +1514,13 @@ func (d *EditConnectionDialog) ensureValidFocusIndex() {
 		{name: "keyPath", visible: d.protocol == "ssh" && d.authMethod == "key" && d.useExistingKey},
 		{name: "keyContent", visible: d.protocol == "ssh" && d.authMethod == "key" && !d.useExistingKey},
 		{name: "passphrase", visible: d.protocol == "ssh" && d.authMethod == "key"},
+		{name: "connectVia", visible: d.protocol == "ssh"},
+		{name: "proxyJump", visible: d.protocol == "ssh" && d.connectVia == "proxyjump"},
+		{name: "proxyHost", visible: d.protocol == "ssh" && d.connectVia == "proxyserver"},
+		{name: "proxyPort", visible: d.protocol == "ssh" && d.connectVia == "proxyserver"},
+		{name: "proxyUser", visible: d.protocol == "ssh" && d.connectVia == "proxyserver"},
+		{name: "proxyPassword", visible: d.protocol == "ssh" && d.connectVia == "proxyserver"},
+		{name: "proxyKeyPath", visible: d.protocol == "ssh" && d.connectVia == "proxyserver"},
 		{name: "group", visible: true},
 		{name: "description", visible: true},
 	}

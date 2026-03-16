@@ -13,7 +13,7 @@
   - VNC（虚拟网络控制台）
 - **智能搜索**：按主机名、描述、IP 地址实时搜索
 - **状态监控**：自动检测主机在线状态
-- **分组管理**：按组组织主机，支持分组切换
+- **分组管理**：按组组织主机，分组按字母序排列，未分组主机始终在最后
 - **配置管理**：JSON 格式配置文件，支持热重载
 <img width="1308" height="854" alt="image" src="https://github.com/user-attachments/assets/e2788543-9850-43c2-b3f9-8bcbb367034a" />
 <img width="1308" height="854" alt="image" src="https://github.com/user-attachments/assets/64c37e50-772c-4f6d-a25f-c4b6720363cf" />
@@ -32,6 +32,7 @@
 ### SSH 会话
 - **后台化支持**：按 `Ctrl+B` 挂起会话，随时切回继续操作
 - **后台会话管理**：查看、切回或断开后台会话
+- **连接取消**：在等待连接时按 `ESC` 可终止正在进行的连接尝试
 <img width="1308" height="854" alt="image" src="https://github.com/user-attachments/assets/d3efa62f-12bd-4387-aa43-dc1a978549df" />
 
 ### SSH 密钥管理
@@ -145,6 +146,12 @@ trelay/
 | 按键 | 功能 |
 |------|------|
 | `Ctrl+B` | 挂起会话到后台 |
+
+### 连接等待界面
+
+| 按键 | 功能 |
+|------|------|
+| `ESC` | 取消正在进行的连接 |
 
 ## 配置文件
 

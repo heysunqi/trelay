@@ -95,7 +95,7 @@ func initLogger(logLevel string) error {
 }
 
 // runDirectConnection 执行直接连接（SSH或RDP）
-func runDirectConnection(host *models.Host, protocolType string) error {
+func runDirectConnection(host *models.Host, protocolType string, allHosts []*models.Host) error {
 	switch protocolType {
 	case "ssh":
 		// 如果命令行参数中提供了密码，则使用该密码
@@ -107,7 +107,7 @@ func runDirectConnection(host *models.Host, protocolType string) error {
 		// TUI可能遗留了隐藏光标的状态
 		fmt.Print("\033[?25h")
 
-		client := ssh.NewClient(host)
+		client := ssh.NewClient(host, allHosts)
 
 		if err := client.Connect(); err != nil {
 			return fmt.Errorf("SSH连接失败: %w", err)
@@ -290,7 +290,7 @@ func runRoot(cmd *cobra.Command, args []string) {
 		}
 
 		// 执行直接连接
-		if err := runDirectConnection(targetHost, protocolType); err != nil {
+		if err := runDirectConnection(targetHost, protocolType, cfg.Profiles); err != nil {
 			logger.Error(fmt.Sprintf("%s连接失败", strings.ToUpper(protocolType)),
 				zap.String("host", directHost), zap.Error(err))
 

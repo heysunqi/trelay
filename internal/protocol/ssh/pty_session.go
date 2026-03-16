@@ -18,7 +18,7 @@ import (
 type PTYSession struct {
 	mu         sync.Mutex
 	host       *models.Host
-	sshClient  *ssh.Client
+	sshClient  SSHClient // 使用接口，支持直连和代理连接
 	session    *ssh.Session
 	stdinPipe  io.WriteCloser
 	stdoutPipe io.Reader
@@ -42,7 +42,7 @@ type PTYSession struct {
 }
 
 // NewPTYSession 创建SSH会话
-func NewPTYSession(host *models.Host, sshClient *ssh.Client) *PTYSession {
+func NewPTYSession(host *models.Host, sshClient SSHClient) *PTYSession {
 	now := time.Now()
 	return &PTYSession{
 		host:      host,

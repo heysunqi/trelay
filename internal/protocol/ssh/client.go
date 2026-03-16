@@ -1,9 +1,11 @@
 package ssh
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/signal"
 	"runtime"
@@ -63,20 +65,65 @@ func getTermSize() (uint16, uint16) {
 	return ws.Rows, ws.Cols
 }
 
+// SSHClient SSH客户端接口，支持直连和代理连接
+type SSHClient interface {
+	NewSession() (*ssh.Session, error)
+	Close() error
+}
+
+// ProxiedClient 包装通过代理的 SSH 客户端
+type ProxiedClient struct {
+	*ssh.Client
+	proxyClient *ssh.Client
+}
+
+// Close 关闭连接（包括代理连接）
+func (pc *ProxiedClient) Close() error {
+	var errs []error
+	if pc.Client != nil {
+		if err := pc.Client.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if pc.proxyClient != nil {
+		if err := pc.proxyClient.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if len(errs) > 0 {
+		return errs[0]
+	}
+	return nil
+}
+
 // Client SSH客户端
 type Client struct {
 	host      *models.Host
-	client    *ssh.Client
+	allHosts  []*models.Host // 所有主机配置，用于查找跳板机
+	client    SSHClient      // SSH客户端接口，支持直连和代理连接
 	status    protocol.ConnectionStatus
 	err       error
 	startTime *time.Time
+	ctx       context.Context // 连接上下文，用于取消连接
 }
 
 // NewClient 创建SSH客户端
-func NewClient(host *models.Host) *Client {
+func NewClient(host *models.Host, allHosts []*models.Host) *Client {
 	return &Client{
-		host:   host,
-		status: protocol.StatusIdle,
+		host:     host,
+		allHosts: allHosts,
+		status:   protocol.StatusIdle,
+		ctx:      context.Background(), // 默认使用 background context
+	}
+}
+
+// NewClientWithContext 创建带上下文的SSH客户端
+func NewClientWithContext(ctx context.Context, host *models.Host, allHosts []*models.Host) *Client {
+	return &Client{
+		host:     host,
+		allHosts: allHosts,
+		status:   protocol.StatusIdle,
+		ctx:      ctx,
 	}
 }
 
@@ -86,48 +133,294 @@ func (c *Client) Connect() error {
 	c.startTime = &time.Time{}
 	*c.startTime = time.Now()
 
+	// 根据连接方式选择连接方法
+	switch c.host.ConnectVia {
+	case "proxyjump":
+		return c.connectViaProxyJump()
+	case "proxyserver":
+		return c.connectViaProxyServer()
+	default:
+		return c.connectDirect()
+	}
+}
+
+// connectDirect 直连目标服务器
+func (c *Client) connectDirect() error {
+	// 检查上下文是否已取消
+	if err := c.ctx.Err(); err != nil {
+		c.status = protocol.StatusDisconnected
+		c.err = fmt.Errorf("连接已取消")
+		return c.err
+	}
+
 	// 构建SSH配置
+	config, err := c.buildSSHConfig(c.host)
+	if err != nil {
+		c.status = protocol.StatusError
+		c.err = err
+		return err
+	}
+
+	// 连接服务器 - 使用 DialContext 支持取消
+	address := fmt.Sprintf("%s:%d", c.host.Host, c.host.GetPort())
+	var d net.Dialer
+	conn, err := d.DialContext(c.ctx, "tcp", address)
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			c.status = protocol.StatusDisconnected
+			c.err = fmt.Errorf("连接已取消")
+		} else {
+			c.status = protocol.StatusError
+			c.err = fmt.Errorf("SSH连接失败: %w", err)
+		}
+		return c.err
+	}
+
+	// 在连接上建立 SSH 会话
+	sshConn, chans, reqs, err := ssh.NewClientConn(conn, address, config)
+	if err != nil {
+		conn.Close()
+		c.status = protocol.StatusError
+		c.err = fmt.Errorf("建立SSH连接失败: %w", err)
+		return c.err
+	}
+
+	c.client = ssh.NewClient(sshConn, chans, reqs)
+	c.status = protocol.StatusConnected
+	c.err = nil
+
+	return nil
+}
+
+// connectViaProxyJump 通过跳板机连接
+func (c *Client) connectViaProxyJump() error {
+	// 检查上下文是否已取消
+	if err := c.ctx.Err(); err != nil {
+		c.status = protocol.StatusDisconnected
+		c.err = fmt.Errorf("连接已取消")
+		return c.err
+	}
+
+	// 查找跳板机配置
+	var proxyHost *models.Host
+	for _, h := range c.allHosts {
+		if h.Name == c.host.ProxyJump {
+			proxyHost = h
+			break
+		}
+	}
+	if proxyHost == nil {
+		c.status = protocol.StatusError
+		c.err = fmt.Errorf("跳板机 %s 未找到", c.host.ProxyJump)
+		return c.err
+	}
+
+	// 连接跳板机 - 使用 DialContext 支持取消
+	proxyConfig, err := c.buildSSHConfig(proxyHost)
+	if err != nil {
+		c.status = protocol.StatusError
+		c.err = fmt.Errorf("构建跳板机SSH配置失败: %w", err)
+		return c.err
+	}
+
+	proxyAddress := fmt.Sprintf("%s:%d", proxyHost.Host, proxyHost.GetPort())
+	var d net.Dialer
+	proxyConn, err := d.DialContext(c.ctx, "tcp", proxyAddress)
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			c.status = protocol.StatusDisconnected
+			c.err = fmt.Errorf("连接已取消")
+		} else {
+			c.status = protocol.StatusError
+			c.err = fmt.Errorf("连接跳板机 %s 失败: %w", proxyHost.Name, err)
+		}
+		return c.err
+	}
+
+	// 在跳板机连接上建立 SSH 会话
+	proxySSHConn, proxyChans, proxyReqs, err := ssh.NewClientConn(proxyConn, proxyAddress, proxyConfig)
+	if err != nil {
+		proxyConn.Close()
+		c.status = protocol.StatusError
+		c.err = fmt.Errorf("建立跳板机SSH连接失败: %w", err)
+		return c.err
+	}
+	proxyClient := ssh.NewClient(proxySSHConn, proxyChans, proxyReqs)
+
+	// 再次检查上下文
+	if err := c.ctx.Err(); err != nil {
+		proxyClient.Close()
+		c.status = protocol.StatusDisconnected
+		c.err = fmt.Errorf("连接已取消")
+		return c.err
+	}
+
+	// 通过跳板机连接目标
+	targetConfig, err := c.buildSSHConfig(c.host)
+	if err != nil {
+		proxyClient.Close()
+		c.status = protocol.StatusError
+		c.err = err
+		return c.err
+	}
+
+	targetAddress := fmt.Sprintf("%s:%d", c.host.Host, c.host.GetPort())
+	conn, err := proxyClient.Dial("tcp", targetAddress)
+	if err != nil {
+		proxyClient.Close()
+		c.status = protocol.StatusError
+		c.err = fmt.Errorf("通过跳板机连接目标 %s:%d 失败: %w", c.host.Host, c.host.GetPort(), err)
+		return c.err
+	}
+
+	// 在连接上建立 SSH 会话
+	ncc, chans, reqs, err := ssh.NewClientConn(conn, targetAddress, targetConfig)
+	if err != nil {
+		conn.Close()
+		proxyClient.Close()
+		c.status = protocol.StatusError
+		c.err = fmt.Errorf("建立SSH连接失败: %w", err)
+		return c.err
+	}
+
+	// 使用 ProxiedClient 包装，确保关闭时同时关闭代理连接
+	c.client = &ProxiedClient{
+		Client:      ssh.NewClient(ncc, chans, reqs),
+		proxyClient: proxyClient,
+	}
+	c.status = protocol.StatusConnected
+	c.err = nil
+
+	return nil
+}
+
+// connectViaProxyServer 通过代理服务器连接
+func (c *Client) connectViaProxyServer() error {
+	// 检查上下文是否已取消
+	if err := c.ctx.Err(); err != nil {
+		c.status = protocol.StatusDisconnected
+		c.err = fmt.Errorf("连接已取消")
+		return c.err
+	}
+
+	// 构建代理服务器配置
+	proxyHost := &models.Host{
+		Host:       c.host.ProxyHost,
+		Port:       c.host.ProxyPort,
+		Username:   c.host.ProxyUser,
+		AuthMethod: c.host.ProxyAuthMethod,
+		Password:   c.host.ProxyPassword,
+		KeyPath:    c.host.ProxyKeyPath,
+	}
+	if proxyHost.Port == 0 {
+		proxyHost.Port = 22
+	}
+
+	proxyConfig, err := c.buildSSHConfig(proxyHost)
+	if err != nil {
+		c.status = protocol.StatusError
+		c.err = fmt.Errorf("构建代理服务器SSH配置失败: %w", err)
+		return c.err
+	}
+
+	// 连接代理服务器 - 使用 DialContext 支持取消
+	proxyAddress := fmt.Sprintf("%s:%d", proxyHost.Host, proxyHost.GetPort())
+	var d net.Dialer
+	proxyConn, err := d.DialContext(c.ctx, "tcp", proxyAddress)
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			c.status = protocol.StatusDisconnected
+			c.err = fmt.Errorf("连接已取消")
+		} else {
+			c.status = protocol.StatusError
+			c.err = fmt.Errorf("连接代理服务器 %s 失败: %w", proxyHost.Host, err)
+		}
+		return c.err
+	}
+
+	// 在代理连接上建立 SSH 会话
+	proxySSHConn, proxyChans, proxyReqs, err := ssh.NewClientConn(proxyConn, proxyAddress, proxyConfig)
+	if err != nil {
+		proxyConn.Close()
+		c.status = protocol.StatusError
+		c.err = fmt.Errorf("建立代理SSH连接失败: %w", err)
+		return c.err
+	}
+	proxyClient := ssh.NewClient(proxySSHConn, proxyChans, proxyReqs)
+
+	// 再次检查上下文
+	if err := c.ctx.Err(); err != nil {
+		proxyClient.Close()
+		c.status = protocol.StatusDisconnected
+		c.err = fmt.Errorf("连接已取消")
+		return c.err
+	}
+
+	// 通过代理服务器连接目标
+	targetConfig, err := c.buildSSHConfig(c.host)
+	if err != nil {
+		proxyClient.Close()
+		c.status = protocol.StatusError
+		c.err = err
+		return c.err
+	}
+
+	targetAddress := fmt.Sprintf("%s:%d", c.host.Host, c.host.GetPort())
+	conn, err := proxyClient.Dial("tcp", targetAddress)
+	if err != nil {
+		proxyClient.Close()
+		c.status = protocol.StatusError
+		c.err = fmt.Errorf("通过代理服务器连接目标 %s:%d 失败: %w", c.host.Host, c.host.GetPort(), err)
+		return c.err
+	}
+
+	// 在连接上建立 SSH 会话
+	ncc, chans, reqs, err := ssh.NewClientConn(conn, targetAddress, targetConfig)
+	if err != nil {
+		conn.Close()
+		proxyClient.Close()
+		c.status = protocol.StatusError
+		c.err = fmt.Errorf("建立SSH连接失败: %w", err)
+		return c.err
+	}
+
+	// 使用 ProxiedClient 包装
+	c.client = &ProxiedClient{
+		Client:      ssh.NewClient(ncc, chans, reqs),
+		proxyClient: proxyClient,
+	}
+	c.status = protocol.StatusConnected
+	c.err = nil
+
+	return nil
+}
+
+// buildSSHConfig 构建 SSH 客户端配置
+func (c *Client) buildSSHConfig(host *models.Host) (*ssh.ClientConfig, error) {
 	config := &ssh.ClientConfig{
-		User:            c.host.Username,
+		User:            host.Username,
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // 生产环境应该验证主机密钥
 		Timeout:         30 * time.Second,
 	}
 
 	// 配置认证方式
-	if c.host.Password != "" {
+	if host.Password != "" {
 		// 密码认证
 		config.Auth = []ssh.AuthMethod{
-			ssh.Password(c.host.Password),
+			ssh.Password(host.Password),
 		}
-	} else if c.host.KeyPath != "" {
+	} else if host.KeyPath != "" {
 		// 密钥认证
-		key, err := c.parsePrivateKey(c.host.KeyPath, c.host.Passphrase)
+		key, err := c.parsePrivateKey(host.KeyPath, host.Passphrase)
 		if err != nil {
-			c.status = protocol.StatusError
-			c.err = fmt.Errorf("解析私钥失败: %w", err)
-			return c.err
+			return nil, fmt.Errorf("解析私钥失败: %w", err)
 		}
 		config.Auth = []ssh.AuthMethod{ssh.PublicKeys(key)}
 	} else {
-		c.status = protocol.StatusError
-		c.err = errors.New("未配置密码或私钥")
-		return c.err
+		return nil, errors.New("未配置密码或私钥")
 	}
 
-	// 连接服务器
-	address := fmt.Sprintf("%s:%d", c.host.Host, c.host.Port)
-	client, err := ssh.Dial("tcp", address, config)
-	if err != nil {
-		c.status = protocol.StatusError
-		c.err = fmt.Errorf("SSH连接失败: %w", err)
-		return c.err
-	}
-
-	c.client = client
-	c.status = protocol.StatusConnected
-	c.err = nil
-
-	return nil
+	return config, nil
 }
 
 // Disconnect 断开连接

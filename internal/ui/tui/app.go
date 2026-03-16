@@ -2,10 +2,12 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -98,10 +100,11 @@ type App struct {
 	lastStatusCheck time.Time
 
 	// 连接相关字段
-	connManager    *protocol.Manager
-	connecting     bool          // 是否正在连接，防止重复触发
-	connectingHost string        // 正在连接的主机名（用于 spinner 显示）
-	spinner        spinner.Model // 连接中的 spinner
+	connManager      *protocol.Manager
+	connecting       bool          // 是否正在连接，防止重复触发
+	connectingHost   string        // 正在连接的主机名（用于 spinner 显示）
+	connectingCancel context.CancelFunc // 连接取消函数
+	spinner          spinner.Model // 连接中的 spinner
 
 	// 新建连接对话框相关字段
 	showNewConnectionDialog bool                         // 是否显示新建连接对话框
@@ -197,6 +200,17 @@ func (a *App) refreshHosts() {
 		a.groups = append(a.groups, groupName)
 	}
 
+	// 排序分组：字母序，"未分组"始终在最后
+	sort.Slice(a.groups, func(i, j int) bool {
+		if a.groups[i] == "未分组" {
+			return false // 未分组始终在最后
+		}
+		if a.groups[j] == "未分组" {
+			return true // 未分组始终在最后
+		}
+		return a.groups[i] < a.groups[j] // 字母序
+	})
+
 	// 如果没有当前分组，设置第一个分组
 	if a.currentGroup == "" && len(a.groups) > 0 {
 		a.currentGroup = a.groups[0]
@@ -272,9 +286,10 @@ type sshSessionMsg struct {
 
 // sshConnectResultMsg SSH 连接结果消息
 type sshConnectResultMsg struct {
-	session *sshpkg.PTYSession
-	err     error
-	host    *models.Host
+	session  *sshpkg.PTYSession
+	err      error
+	host     *models.Host
+	canceled bool // 标记是否被取消
 }
 
 // checkHostStatusAsync 异步检查主机状态，不阻塞 UI 线程
@@ -384,10 +399,19 @@ func (a *App) executeConnection(host *models.Host) tea.Cmd {
 
 // executeSSHConnection 使用进程内 PTY 执行 SSH 连接
 func (a *App) executeSSHConnection(host *models.Host) tea.Cmd {
+	// 创建可取消的上下文
+	ctx, cancel := context.WithCancel(context.Background())
+	a.connectingCancel = cancel
+
 	// 异步建立 SSH 连接
 	return func() tea.Msg {
-		client := sshpkg.NewClient(host)
+		// 使用带上下文的客户端
+		client := sshpkg.NewClientWithContext(ctx, host, a.config.Profiles)
 		if err := client.Connect(); err != nil {
+			// 检查是否是取消导致的错误
+			if errors.Is(err, context.Canceled) {
+				return sshConnectResultMsg{canceled: true, host: host}
+			}
 			return sshConnectResultMsg{err: fmt.Errorf("SSH连接失败: %w", err), host: host}
 		}
 
@@ -573,6 +597,23 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.height = wMsg.Height
 		}
 		return a, nil
+	}
+
+	// 如果正在连接中，处理终止操作
+	if a.connecting {
+		if keyMsg, ok := msg.(tea.KeyMsg); ok {
+			if keyMsg.Type == tea.KeyEsc || keyMsg.String() == "esc" {
+				// 取消连接
+				if a.connectingCancel != nil {
+					a.connectingCancel()
+					a.connectingCancel = nil
+				}
+				// 重置状态
+				a.connecting = false
+				a.connectingHost = ""
+				return a, nil
+			}
+		}
 	}
 
 	// 如果显示密码输入对话框，先让对话框处理消息
@@ -1212,7 +1253,14 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			for _, group := range a.config.Groups {
 				groupNames = append(groupNames, group.Name)
 			}
-			a.newConnectionDialog = dialogs.NewNewConnectionDialog(groupNames, a.width, a.height)
+			// 获取可用作跳板机的主机列表
+			var availableProxies []string
+			for _, host := range a.config.Profiles {
+				if host.Protocol == "ssh" {
+					availableProxies = append(availableProxies, host.Name)
+				}
+			}
+			a.newConnectionDialog = dialogs.NewNewConnectionDialog(groupNames, availableProxies, a.width, a.height)
 			return a, nil
 
 		case "G", "g":
@@ -1236,8 +1284,15 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				for _, group := range a.config.Groups {
 					groupNames = append(groupNames, group.Name)
 				}
+				// 获取可用作跳板机的主机列表
+				var availableProxies []string
+				for _, h := range a.config.Profiles {
+					if h.Protocol == "ssh" && h.Name != host.Name {
+						availableProxies = append(availableProxies, h.Name)
+					}
+				}
 				a.showEditDialog = true
-				a.editDialog = dialogs.NewEditConnectionDialog(host, groupNames, hostGroup, a.width, a.height)
+				a.editDialog = dialogs.NewEditConnectionDialog(host, groupNames, hostGroup, availableProxies, a.width, a.height)
 			}
 			return a, nil
 
@@ -2133,7 +2188,7 @@ func (a *App) renderConnectingView() string {
 	content.WriteString(a.spinner.View())
 	content.WriteString(contentStyle.Render(" " + a.connectingHost))
 	content.WriteString("\n\n")
-	content.WriteString(hintStyle.Render("请等待..."))
+	content.WriteString(hintStyle.Render("请等待... (按 ESC 终止)"))
 
 	dialogContent := dialogStyle.Render(content.String())
 
