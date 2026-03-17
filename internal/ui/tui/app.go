@@ -161,6 +161,9 @@ type App struct {
 	showSessionList    bool // 是否显示后台会话列表
 	sessionListCursor  int  // 后台会话列表光标
 	pendingSSHSession  *sshpkg.PTYSession // 等待 attach 的 SSH 会话
+
+	// 状态管理
+	stateManager *StateManager // 状态管理器
 }
 
 // NewApp 创建新的应用程序实例
@@ -206,6 +209,11 @@ func NewApp(logger *zap.Logger) (*App, error) {
 
 	// 初始化主机数据
 	app.refreshHosts()
+
+	// 初始化状态管理器
+	app.stateManager = NewStateManager(app)
+	// 设置默认状态为普通模式
+	app.stateManager.SetState(NewNormalState())
 
 	// 初始化最后状态检查时间
 	app.lastStatusCheck = time.Now()
@@ -578,58 +586,6 @@ func (a *App) Init() tea.Cmd {
 
 // Update 处理消息和更新状态
 func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	// 如果显示后台会话列表，先处理
-	if a.showSessionList {
-		if keyMsg, ok := msg.(tea.KeyMsg); ok {
-			bgSessions := a.connManager.GetBackgroundSessions()
-			switch keyMsg.String() {
-			case "esc", "q":
-				a.showSessionList = false
-				return a, nil
-			case "up", "k":
-				if a.sessionListCursor > 0 {
-					a.sessionListCursor--
-				}
-				return a, nil
-			case "down", "j":
-				if a.sessionListCursor < len(bgSessions)-1 {
-					a.sessionListCursor++
-				}
-				return a, nil
-			case "enter":
-				// 切回前台
-				if a.sessionListCursor < len(bgSessions) {
-					session := bgSessions[a.sessionListCursor]
-					if ptySession, ok := session.(*sshpkg.PTYSession); ok && ptySession.IsAlive() {
-						a.showSessionList = false
-						return a, a.attachSSHSession(ptySession, true) // 从后台恢复
-					}
-				}
-				return a, nil
-			case "d", "D":
-				// 断开选中的后台会话
-				if a.sessionListCursor < len(bgSessions) {
-					session := bgSessions[a.sessionListCursor]
-					a.connManager.RemoveSession(session.GetHostID())
-					// 更新光标
-					newSessions := a.connManager.GetBackgroundSessions()
-					if len(newSessions) == 0 {
-						a.showSessionList = false
-					} else if a.sessionListCursor >= len(newSessions) {
-						a.sessionListCursor = len(newSessions) - 1
-					}
-				}
-				return a, nil
-			}
-		}
-		// 仍需处理 WindowSizeMsg
-		if wMsg, ok := msg.(tea.WindowSizeMsg); ok {
-			a.width = wMsg.Width
-			a.height = wMsg.Height
-		}
-		return a, nil
-	}
-
 	// 如果正在连接中，处理终止操作
 	if a.connecting {
 		if keyMsg, ok := msg.(tea.KeyMsg); ok {
@@ -1039,304 +995,15 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case tea.KeyMsg:
-		// 分组选择模式优先
-		if a.groupSelectMode {
-			if a.groupSearchMode {
-				// 分组搜索子模式
-				switch msg.Type {
-				case tea.KeyEsc:
-					// 退出搜索编辑，清空搜索词，恢复全部分组，输入框保留（空）
-					a.groupSearchMode = false
-					a.groupSearchQuery = ""
-					a.commandInput.Blur()
-					a.commandInput.Reset()
-					a.applyGroupSearchFilter()
-				case tea.KeyEnter:
-					// 退出搜索编辑，保留筛选结果，输入框保留（含搜索词）
-					a.groupSearchMode = false
-					a.commandInput.Blur()
-					if len(a.filteredGroupList) > 0 {
-						a.groupSelectCursor = 0
-					}
-				default:
-					var cmd tea.Cmd
-					a.commandInput, cmd = a.commandInput.Update(msg)
-					a.groupSearchQuery = a.commandInput.Value()
-					a.applyGroupSearchFilter()
-					return a, cmd
-				}
-				return a, nil
-			}
-
-			// 分组选择模式（非搜索）
-			switch msg.Type {
-			case tea.KeyEsc:
-				a.groupSelectMode = false
-				a.commandMode = false
-				a.groupSearchMode = false
-				a.groupSearchQuery = ""
-				a.groupSearchBoxVisible = false
-				a.commandInput.Blur()
-				a.commandInput.Reset()
-			default:
-				switch msg.String() {
-				case "up", "k":
-					if a.groupSelectCursor > 0 {
-						a.groupSelectCursor--
-					}
-				case "down", "j":
-					if len(a.filteredGroupList) > 0 && a.groupSelectCursor < len(a.filteredGroupList)-1 {
-						a.groupSelectCursor++
-					}
-				case "/":
-					a.groupSearchMode = true
-					a.groupSearchBoxVisible = true
-					if a.groupSearchQuery == "" {
-						a.commandInput.Reset()
-					}
-					a.commandInput.Placeholder = "搜索分组..."
-					a.commandInput.Focus()
-					return a, textinput.Blink
-				case "enter":
-					if len(a.filteredGroupList) > 0 && a.groupSelectCursor < len(a.filteredGroupList) {
-						a.currentGroup = a.filteredGroupList[a.groupSelectCursor]
-					}
-					a.groupSelectMode = false
-					a.commandMode = false
-					a.groupSearchMode = false
-					a.groupSearchQuery = ""
-					a.groupSearchBoxVisible = false
-					a.commandInput.Blur()
-					a.commandInput.Reset()
-					a.refreshHosts()
-				case "q":
-					a.groupSelectMode = false
-					a.commandMode = false
-					a.groupSearchMode = false
-					a.groupSearchQuery = ""
-					a.groupSearchBoxVisible = false
-					a.commandInput.Blur()
-					a.commandInput.Reset()
-				}
-			}
+		// 如果有对话框显示，优先让对话框处理
+		if a.showPasswordDialog || a.showErrorDialog || a.showNewConnectionDialog || a.showNewGroupDialog || a.showEditDialog {
+			// 对话框会在各自内部处理，不需要委托给状态管理器
 			return a, nil
 		}
 
-		// 命令模式
-		if a.commandMode {
-			switch msg.Type {
-			case tea.KeyEsc:
-				a.commandMode = false
-				a.commandInput.Blur()
-				a.commandInput.Reset()
-			case tea.KeyEnter:
-				cmd := a.commandInput.Value()
-				if cmd == "group" {
-					a.groupSelectMode = true
-					a.groupSelectCursor = 0
-					a.groupList = a.groups
-					a.filteredGroupList = a.groups
-					a.groupSearchQuery = ""
-				}
-				// 不识别的命令：清除命令模式
-				if cmd != "group" {
-					a.commandMode = false
-					a.commandInput.Blur()
-					a.commandInput.Reset()
-				}
-			default:
-				var cmd tea.Cmd
-				a.commandInput, cmd = a.commandInput.Update(msg)
-				return a, cmd
-			}
-			return a, nil
-		}
-
-		// 主机搜索模式
-		if a.searchMode {
-			switch msg.Type {
-			case tea.KeyEsc:
-				// 退出搜索编辑，清空搜索词，恢复全部列表，输入框保留（空）
-				a.searchMode = false
-				a.searchQuery = ""
-				a.commandInput.Blur()
-				a.commandInput.Reset()
-				a.applySearchFilter()
-				a.updatePaginator()
-			case tea.KeyEnter:
-				// 退出搜索编辑，保留搜索结果，输入框保留（含搜索词）
-				a.searchMode = false
-				a.commandInput.Blur()
-				if len(a.filteredHosts) > 0 {
-					a.selected = 0
-					a.paginator.Page = 0
-				}
-			default:
-				var cmd tea.Cmd
-				a.commandInput, cmd = a.commandInput.Update(msg)
-				a.searchQuery = a.commandInput.Value()
-				a.applySearchFilter()
-				a.updatePaginator()
-				return a, cmd
-			}
-			return a, nil
-		}
-
-		// 普通模式下的键盘事件处理
-		switch msg.String() {
-		case "q", "ctrl+c":
-			a.quitting = true
-			return a, tea.Quit
-
-		case ":":
-			// 进入命令模式
-			a.commandMode = true
-			a.commandInput.Reset()
-			a.commandInput.Placeholder = "输入命令..."
-			a.commandInput.Focus()
-			return a, textinput.Blink
-
-		case "/":
-			// 进入搜索模式
-			a.searchMode = true
-			a.searchBoxVisible = true
-			if a.searchQuery == "" {
-				a.commandInput.Reset()
-			}
-			a.commandInput.Placeholder = "搜索主机..."
-			a.commandInput.Focus()
-			return a, textinput.Blink
-
-		case "up", "k":
-			if a.selected > 0 {
-				a.selected--
-				a.paginator.Page = a.selected / a.pageSize
-			}
-			return a, nil
-
-		case "down", "j":
-			if len(a.filteredHosts) > 0 && a.selected < len(a.filteredHosts)-1 {
-				a.selected++
-				a.paginator.Page = a.selected / a.pageSize
-			}
-			return a, nil
-
-		case "left", "h":
-			if a.paginator.Page > 0 {
-				a.paginator.Page--
-				a.selected = a.paginator.Page * a.pageSize
-			}
-			return a, nil
-
-		case "right", "l":
-			if a.paginator.Page < a.paginator.TotalPages-1 {
-				a.paginator.Page++
-				a.selected = a.paginator.Page * a.pageSize
-			}
-			return a, nil
-
-		case "enter":
-			if len(a.filteredHosts) > 0 && a.selected < len(a.filteredHosts) && !a.connecting {
-				host := a.filteredHosts[a.selected]
-
-				// 检查是否已有后台会话可复用
-				if session, ok := a.connManager.GetSession(host.Name); ok {
-					if ptySession, ok := session.(*sshpkg.PTYSession); ok {
-						if ptySession.IsConnected() && !ptySession.IsAttached() && ptySession.IsAlive() {
-							a.connecting = true
-							return a, a.attachSSHSession(ptySession, true)
-						}
-					}
-				}
-
-				a.connecting = true
-				a.connectingHost = host.Name
-
-				if host.Protocol == "ssh" && host.Password == "" && host.KeyPath == "" {
-					a.showPasswordDialog = true
-					a.passwordDialog = dialogs.NewPasswordDialog(host, a.width, a.height)
-				} else {
-					return a, a.executeConnection(host)
-				}
-			}
-			return a, nil
-
-		case "tab":
-			if len(a.groups) > 1 {
-				currentIndex := -1
-				for i, group := range a.groups {
-					if group == a.currentGroup {
-						currentIndex = i
-						break
-					}
-				}
-				if currentIndex >= 0 {
-					nextIndex := (currentIndex + 1) % len(a.groups)
-					a.currentGroup = a.groups[nextIndex]
-					a.refreshHosts()
-				}
-			}
-			return a, nil
-
-		case "N", "n":
-			a.showNewConnectionDialog = true
-			var groupNames []string
-			for _, group := range a.config.Groups {
-				groupNames = append(groupNames, group.Name)
-			}
-			// 获取可用作跳板机的主机列表
-			var availableProxies []string
-			for _, host := range a.config.Profiles {
-				if host.Protocol == "ssh" {
-					availableProxies = append(availableProxies, host.Name)
-				}
-			}
-			a.newConnectionDialog = dialogs.NewNewConnectionDialog(groupNames, availableProxies, a.width, a.height)
-			return a, nil
-
-		case "G", "g":
-			a.showNewGroupDialog = true
-			a.newGroupDialog = dialogs.NewNewGroupDialog(a.width, a.height)
-			return a, nil
-
-		case "B", "b":
-			bgSessions := a.connManager.GetBackgroundSessions()
-			if len(bgSessions) > 0 {
-				a.showSessionList = true
-				a.sessionListCursor = 0
-			}
-			return a, nil
-
-		case "E", "e":
-			if len(a.filteredHosts) > 0 && a.selected < len(a.filteredHosts) {
-				host := a.filteredHosts[a.selected]
-				hostGroup := a.findHostGroup(host.Name)
-				var groupNames []string
-				for _, group := range a.config.Groups {
-					groupNames = append(groupNames, group.Name)
-				}
-				// 获取可用作跳板机的主机列表
-				var availableProxies []string
-				for _, h := range a.config.Profiles {
-					if h.Protocol == "ssh" && h.Name != host.Name {
-						availableProxies = append(availableProxies, h.Name)
-					}
-				}
-				a.showEditDialog = true
-				a.editDialog = dialogs.NewEditConnectionDialog(host, groupNames, hostGroup, availableProxies, a.width, a.height)
-			}
-			return a, nil
-
-		case "r":
-			if cfg, err := a.configMgr.Load(); err == nil {
-				a.config = cfg
-				a.refreshHosts()
-				a.logger.Info("配置已刷新")
-			} else {
-				a.logger.Error("刷新配置失败", zap.Error(err))
-			}
-			return a, a.checkHostStatusAsync()
-		}
+		// 如果正在连接中，也由状态管理器处理
+		// 委托给状态管理器处理键盘事件
+		return a.stateManager.HandleKey(msg)
 	}
 
 	return a, nil
