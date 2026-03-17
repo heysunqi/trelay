@@ -500,35 +500,35 @@ func (d *EditConnectionDialog) Update(msg tea.Msg) (*EditConnectionDialog, tea.C
 					fieldName := visibleFields[d.focusIndex]
 					switch fieldName {
 					case "name":
-						d.nameInput = handleTextInput(d.nameInput, msg)
+						d.nameInput = HandleTextInput(d.nameInput, msg)
 					case "ip":
-						d.ipInput = handleTextInput(d.ipInput, msg)
+						d.ipInput = HandleTextInput(d.ipInput, msg)
 					case "port":
-						d.portInput = handlePortInput(d.portInput, msg)
+						d.portInput = HandlePortInput(d.portInput, msg)
 					case "username":
-						d.usernameInput = handleTextInput(d.usernameInput, msg)
+						d.usernameInput = HandleTextInput(d.usernameInput, msg)
 					case "password":
-						d.passwordInput = handlePasswordInput(d.passwordInput, msg)
+						d.passwordInput = HandlePasswordInput(d.passwordInput, msg)
 					case "keyPath":
-						d.keyPathInput = handleTextInput(d.keyPathInput, msg)
+						d.keyPathInput = HandleTextInput(d.keyPathInput, msg)
 					case "passphrase":
-						d.passphraseInput = handlePasswordInput(d.passphraseInput, msg)
+						d.passphraseInput = HandlePasswordInput(d.passphraseInput, msg)
 					case "description":
-						d.descriptionInput = handleTextInput(d.descriptionInput, msg)
+						d.descriptionInput = HandleTextInput(d.descriptionInput, msg)
 					case "group":
 						if msg.Type != tea.KeySpace {
-							d.groupInput = handleTextInput(d.groupInput, msg)
+							d.groupInput = HandleTextInput(d.groupInput, msg)
 						}
 					case "proxyHost":
-						d.proxyHostInput = handleTextInput(d.proxyHostInput, msg)
+						d.proxyHostInput = HandleTextInput(d.proxyHostInput, msg)
 					case "proxyPort":
-						d.proxyPortInput = handlePortInput(d.proxyPortInput, msg)
+						d.proxyPortInput = HandlePortInput(d.proxyPortInput, msg)
 					case "proxyUser":
-						d.proxyUserInput = handleTextInput(d.proxyUserInput, msg)
+						d.proxyUserInput = HandleTextInput(d.proxyUserInput, msg)
 					case "proxyPassword":
-						d.proxyPasswordInput = handlePasswordInput(d.proxyPasswordInput, msg)
+						d.proxyPasswordInput = HandlePasswordInput(d.proxyPasswordInput, msg)
 					case "proxyKeyPath":
-						d.proxyKeyPathInput = handleTextInput(d.proxyKeyPathInput, msg)
+						d.proxyKeyPathInput = HandleTextInput(d.proxyKeyPathInput, msg)
 					}
 				}
 			}

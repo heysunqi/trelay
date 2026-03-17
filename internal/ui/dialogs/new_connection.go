@@ -390,35 +390,35 @@ func (d *NewConnectionDialog) Update(msg tea.Msg) (*NewConnectionDialog, tea.Cmd
 					fieldName := visibleFields[d.focusIndex]
 					switch fieldName {
 					case "name":
-						d.nameInput = handleTextInput(d.nameInput, msg)
+						d.nameInput = HandleTextInput(d.nameInput, msg)
 					case "ip":
-						d.ipInput = handleTextInput(d.ipInput, msg)
+						d.ipInput = HandleTextInput(d.ipInput, msg)
 					case "port":
-						d.portInput = handlePortInput(d.portInput, msg)
+						d.portInput = HandlePortInput(d.portInput, msg)
 					case "username":
-						d.usernameInput = handleTextInput(d.usernameInput, msg)
+						d.usernameInput = HandleTextInput(d.usernameInput, msg)
 					case "password":
-						d.passwordInput = handlePasswordInput(d.passwordInput, msg)
+						d.passwordInput = HandlePasswordInput(d.passwordInput, msg)
 					case "keyPath":
-						d.keyPathInput = handleTextInput(d.keyPathInput, msg)
+						d.keyPathInput = HandleTextInput(d.keyPathInput, msg)
 					case "passphrase":
-						d.passphraseInput = handlePasswordInput(d.passphraseInput, msg)
+						d.passphraseInput = HandlePasswordInput(d.passphraseInput, msg)
 					case "description":
-						d.descriptionInput = handleTextInput(d.descriptionInput, msg)
+						d.descriptionInput = HandleTextInput(d.descriptionInput, msg)
 					case "group":
 						if msg.Type != tea.KeySpace {
-							d.groupInput = handleTextInput(d.groupInput, msg)
+							d.groupInput = HandleTextInput(d.groupInput, msg)
 						}
 					case "proxyHost":
-						d.proxyHostInput = handleTextInput(d.proxyHostInput, msg)
+						d.proxyHostInput = HandleTextInput(d.proxyHostInput, msg)
 					case "proxyPort":
-						d.proxyPortInput = handlePortInput(d.proxyPortInput, msg)
+						d.proxyPortInput = HandlePortInput(d.proxyPortInput, msg)
 					case "proxyUser":
-						d.proxyUserInput = handleTextInput(d.proxyUserInput, msg)
+						d.proxyUserInput = HandleTextInput(d.proxyUserInput, msg)
 					case "proxyPassword":
-						d.proxyPasswordInput = handlePasswordInput(d.proxyPasswordInput, msg)
+						d.proxyPasswordInput = HandlePasswordInput(d.proxyPasswordInput, msg)
 					case "proxyKeyPath":
-						d.proxyKeyPathInput = handleTextInput(d.proxyKeyPathInput, msg)
+						d.proxyKeyPathInput = HandleTextInput(d.proxyKeyPathInput, msg)
 					}
 				}
 			}
@@ -1367,82 +1367,4 @@ func (d *NewConnectionDialog) ensureValidFocusIndex() {
 	if d.focusIndex >= totalVisible {
 		d.focusIndex = totalVisible - 1
 	}
-}
-
-// 处理文本输入
-func handleTextInput(current string, msg tea.KeyMsg) string {
-	switch msg.Type {
-	case tea.KeyBackspace:
-		if len(current) > 0 {
-			return current[:len(current)-1]
-		}
-	case tea.KeyDelete:
-		return current
-	case tea.KeyHome:
-		return current
-	case tea.KeyEnd:
-		return current
-	default:
-		if len(msg.Runes) > 0 {
-			char := string(msg.Runes)
-			switch char {
-			case "\n", "\t", "\r":
-				return current
-			default:
-				return current + char
-			}
-		}
-	}
-	return current
-}
-
-// 处理端口输入
-func handlePortInput(current string, msg tea.KeyMsg) string {
-	switch msg.Type {
-	case tea.KeyBackspace:
-		if len(current) > 0 {
-			return current[:len(current)-1]
-		}
-	case tea.KeyDelete:
-		return current
-	case tea.KeyHome:
-		return current
-	case tea.KeyEnd:
-		return current
-	default:
-		if len(msg.Runes) > 0 {
-			char := string(msg.Runes)
-			if char >= "0" && char <= "9" {
-				return current + char
-			}
-		}
-	}
-	return current
-}
-
-// 处理密码输入
-func handlePasswordInput(current string, msg tea.KeyMsg) string {
-	switch msg.Type {
-	case tea.KeyBackspace:
-		if len(current) > 0 {
-			return current[:len(current)-1]
-		}
-	case tea.KeyDelete:
-		return current
-	case tea.KeyHome:
-		return current
-	case tea.KeyEnd:
-		return current
-	default:
-		if len(msg.Runes) > 0 {
-			char := string(msg.Runes)
-			switch char {
-			case "\n", "\t", "\r":
-				return current
-			default:
-				return current + char
-			}
-		}
-	}
-	return current
 }
