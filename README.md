@@ -99,18 +99,52 @@ make build
 
 ```
 trelay/
-├── cmd/trelay/          # 程序入口
+├── cmd/trelay/
+│   └── main.go              # 程序入口
 ├── internal/
-│   ├── config/         # 配置管理
-│   ├── keymgr/         # 密钥文件管理
-│   ├── protocol/       # 协议实现
-│   │   ├── ssh/        # SSH 协议
-│   │   ├── rdp/        # RDP 协议
-│   │   └── vnc/        # VNC 协议
-│   └── ui/tui/         # TUI 界面
-│       └── dialogs/    # 对话框组件
-├── pkg/models/          # 数据模型
-└── configs/            # 配置示例
+│   ├── config/              # 配置管理
+│   │   ├── config.go        # 配置结构与加载
+│   │   └── loader.go        # 配置加载器
+│   ├── keymgr/              # SSH 密钥管理
+│   │   └── manager.go       # 密钥文件管理
+│   ├── protocol/            # 协议抽象层
+│   │   ├── session.go       # Session 接口定义
+│   │   ├── manager.go       # 连接管理器
+│   │   ├── ssh/             # SSH 协议实现
+│   │   │   ├── client.go         # SSH 客户端
+│   │   │   ├── pty_session.go    # PTY 会话（支持后台挂起）
+│   │   │   └── exec_adapter.go   # Bubble Tea 执行适配器
+│   │   ├── rdp/             # RDP 协议实现
+│   │   │   ├── client.go         # RDP 客户端
+│   │   │   ├── detector.go       # RDP 工具检测
+│   │   │   ├── selector.go       # 平台选择器
+│   │   │   ├── builder.go        # 命令构建器
+│   │   │   ├── freerdp_builder.go # FreeRDP 实现
+│   │   │   └── remmina_builder.go # Remmina 实现
+│   │   └── vnc/             # VNC 协议实现
+│   │       ├── client.go         # VNC 客户端
+│   │       ├── detector.go       # VNC 工具检测
+│   │       ├── builder.go        # 命令构建器
+│   │       └── tigervnc_builder.go # TigerVNC 实现
+│   └── ui/
+│       ├── dialogs/              # 对话框组件
+│       │   ├── new_connection.go  # 新建连接对话框
+│       │   ├── edit_connection.go # 编辑连接对话框
+│       │   ├── new_group.go       # 新建分组对话框
+│       │   ├── password.go        # 密码输入对话框
+│       │   └── error.go            # 错误提示对话框
+│       └── tui/                   # TUI 主界面
+│           ├── app.go              # 主应用程序
+│           ├── state.go            # 状态接口定义
+│           ├── normal_state.go     # 普通模式
+│           ├── search_state.go     # 搜索模式
+│           ├── command_state.go    # 命令模式
+│           ├── group_select_state.go # 分组选择模式
+│           └── session_list_state.go # 后台会话列表
+└── pkg/models/                # 数据模型
+    ├── host.go                # 主机配置模型
+    ├── config.go              # 配置模型
+    └── connection.go          # 连接模型
 ```
 
 ## 界面操作
@@ -222,6 +256,28 @@ trelay/
       "passphrase": "key_passphrase"
     },
     {
+      "name": "bastion",
+      "description": "跳板机",
+      "protocol": "ssh",
+      "host": "bastion.example.com",
+      "port": 22,
+      "username": "admin",
+      "auth_method": "key",
+      "key_path": "~/.ssh/id_rsa"
+    },
+    {
+      "name": "internal-server",
+      "description": "内网服务器（通过跳板机）",
+      "protocol": "ssh",
+      "host": "192.168.1.200",
+      "port": 22,
+      "username": "admin",
+      "auth_method": "password",
+      "password": "your_password",
+      "connect_via": "proxyjump",
+      "proxy_jump": "bastion"
+    },
+    {
       "name": "windows-server",
       "description": "Windows 服务器",
       "protocol": "rdp",
@@ -252,14 +308,22 @@ trelay/
 | host | string | 主机地址 |
 | port | int | 端口号 |
 | username | string | 用户名（SSH/RDP） |
-| auth_method | string | 认证方式：password, key |
+| auth_method | string | 认证方式：password, key, agent |
 | password | string | 密码 |
 | key_path | string | SSH 私钥路径 |
 | passphrase | string | SSH 私钥密码 |
 | domain | string | RDP 域 |
-| screen_size | string | RDP 分辨率 |
-| color_depth | int | RDP 颜色深度 |
+| screen_size | string | RDP 分辨率（如 "1920x1080"） |
+| color_depth | int | RDP 颜色深度（如 16, 24, 32） |
 | view_only | bool | VNC 只读模式 |
+| connect_via | string | 连接方式：direct, proxyjump, proxyserver |
+| proxy_jump | string | 跳板机名称（引用配置中的其他主机） |
+| proxy_host | string | 代理服务器地址 |
+| proxy_port | int | 代理服务器端口 |
+| proxy_user | string | 代理服务器用户名 |
+| proxy_auth_method | string | 代理服务器认证方式 |
+| proxy_password | string | 代理服务器密码 |
+| proxy_key_path | string | 代理服务器密钥路径 |
 
 ## SSH 密钥管理
 
