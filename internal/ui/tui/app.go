@@ -101,6 +101,7 @@ type App struct {
 	groups        []string                  // 分组名称列表
 	currentGroup  string                    // 当前选中的分组
 	quitting      bool
+	quitConfirm   bool // 是否等待确认退出（第一次按 Ctrl+C 时设置为 true）
 
 	// 搜索相关字段
 	searchQuery    string
@@ -330,6 +331,9 @@ type sshConnectResultMsg struct {
 	host     *models.Host
 	canceled bool // 标记是否被取消
 }
+
+// quitConfirmTimeoutMsg 退出确认超时消息（3秒后自动重置确认状态）
+type quitConfirmTimeoutMsg struct{}
 
 // checkHostStatusAsync 异步检查主机状态，不阻塞 UI 线程
 func (a *App) checkHostStatusAsync() tea.Cmd {
@@ -944,6 +948,11 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.statusCheckCmd(),
 		)
 
+	case quitConfirmTimeoutMsg:
+		// 退出确认超时，重置确认状态
+		a.quitConfirm = false
+		return a, nil
+
 	case hostStatusResult:
 		// 异步状态检查结果返回，更新主机状态
 		for _, host := range a.hosts {
@@ -995,14 +1004,8 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case tea.KeyMsg:
-		// 如果有对话框显示，优先让对话框处理
-		if a.showPasswordDialog || a.showErrorDialog || a.showNewConnectionDialog || a.showNewGroupDialog || a.showEditDialog {
-			// 对话框会在各自内部处理，不需要委托给状态管理器
-			return a, nil
-		}
-
-		// 如果正在连接中，也由状态管理器处理
 		// 委托给状态管理器处理键盘事件
+		// 状态管理器会根据当前状态（普通模式、搜索模式、对话框等）处理
 		return a.stateManager.HandleKey(msg)
 	}
 
@@ -1011,6 +1014,14 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // View 渲染界面
 func (a *App) View() string {
+	// 如果当前是对话框状态，委托给状态管理器渲染
+	currentState := a.stateManager.CurrentState()
+	if currentState != nil && currentState.GetStateType() == StateDialog {
+		if ds, ok := currentState.(DialogState); ok {
+			return ds.Render()
+		}
+	}
+
 	// 后台会话列表弹窗优先显示
 	if a.showSessionList {
 		return a.renderSessionList()
@@ -1858,7 +1869,17 @@ func (a *App) renderStatusBar() string {
 		BorderForeground(lipgloss.Color("#00aa00")).
 		Width(a.width - 2)
 
-	return barStyle.Render(inner)
+	result := barStyle.Render(inner)
+
+	// 如果处于退出确认状态，添加提示
+	if a.quitConfirm {
+		quitHintStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("yellow")).
+			Bold(true)
+		result += "\n" + quitHintStyle.Render(" 提示: 再按一次 Ctrl+C 退出程序 ")
+	}
+
+	return result
 }
 
 // renderConnectingView 渲染连接中的 loading 视图

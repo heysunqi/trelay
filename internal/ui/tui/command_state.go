@@ -44,17 +44,25 @@ func (s *CommandState) OnExit() (tea.Model, tea.Cmd) {
 func (s *CommandState) HandleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	a := stateManager.app
 
-	switch msg.Type {
-	case tea.KeyEsc:
+	switch msg.String() {
+	case "ctrl+c":
+		// 命令模式下忽略 Ctrl+C，不退出
+		return a, nil
+
+	case "esc":
 		a.commandMode = false
 		a.commandInput.Blur()
 		a.commandInput.Reset()
 		// 切换回普通模式
 		stateManager.SetState(NewNormalState())
 
-	case tea.KeyEnter:
+	case "enter":
 		cmd := a.commandInput.Value()
-		if cmd == "group" {
+		if cmd == "q" {
+			// 输入 q 后按回车退出程序
+			a.quitting = true
+			return a, tea.Quit
+		} else if cmd == "group" {
 			// 进入分组选择模式
 			a.groupSelectMode = true
 			a.groupSelectCursor = 0
